@@ -1354,6 +1354,7 @@ git commit -m "feat: add heartbeat watchdog and recovery manager"
 
 **Files:**
 - Create: `companion/src/index.ts`
+- Create: `companion/src/index.test.ts`
 
 - [ ] **Step 1: Write index.ts**
 
