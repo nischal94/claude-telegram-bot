@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nischal.claudebot-watchdog</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/nischal/bin/claude-bot-watchdog.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/nischal/bin:/Users/nischal/.local/bin:/Users/nischal/.npm-global/bin:/Users/nischal/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/nischal</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/nischal/.claude/logs/claudebot-watchdog-launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/nischal/.claude/logs/claudebot-watchdog-launchd.log</string>
+</dict>
+</plist>
