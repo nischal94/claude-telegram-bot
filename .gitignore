@@ -1,0 +1,15 @@
+# Personal system prompt — never commit
+prompts/current.txt
+prompts/*.txt
+!prompts/system-prompt.example.txt
+
+# Secrets
+*.env
+.env*
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.pyc
