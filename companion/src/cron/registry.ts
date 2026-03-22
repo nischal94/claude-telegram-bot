@@ -38,7 +38,11 @@ export class CronRegistry {
       const raw = readFileSync(this.path, "utf-8");
       const arr = JSON.parse(raw) as CronJob[];
       this.jobs = new Map(arr.map((j) => [j.id, j]));
-    } catch {
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") {
+        console.error(`[registry] Failed to load ${this.path}: ${(err as Error).message}`);
+      }
       this.jobs = new Map();
     }
   }
@@ -70,7 +74,8 @@ export class CronRegistry {
   update(id: string, patch: Partial<CronJob>): void {
     const job = this.jobs.get(id);
     if (!job) throw new Error(`job not found: ${id}`);
-    this.jobs.set(id, { ...job, ...patch });
+    const { id: _ignoredId, ...safePatch } = patch;
+    this.jobs.set(id, { ...job, ...safePatch });
     this.save();
   }
 
