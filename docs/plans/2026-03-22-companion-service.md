@@ -917,7 +917,7 @@ export async function executeJob(job: CronJob, telegram: TelegramClient, apiKey:
 Create `companion/src/cron/scheduler.ts`:
 ```typescript
 import cron from "node-cron";
-import type { CronRegistry } from "./registry";
+import type { CronRegistry, CronJob } from "./registry";
 import { executeJob } from "./executor";
 import type { TelegramClient } from "../telegram";
 
@@ -926,7 +926,6 @@ export class CronScheduler {
   private telegram: TelegramClient;
   private apiKey: string;
   private tasks: Map<string, ReturnType<typeof cron.schedule>> = new Map();
-  private running = false;
 
   constructor(registry: CronRegistry, telegram: TelegramClient, apiKey: string) {
     this.registry = registry;
@@ -1277,11 +1276,6 @@ function log(logPath: string, message: string): void {
   appendFileSync(logPath, `${ts} ${message}\n`, "utf-8");
 }
 
-function isBotRunning(): boolean {
-  const result = spawnSync("pgrep", ["-f", "claude.*--channels plugin:telegram"], { encoding: "utf-8" });
-  return (result.stdout ?? "").trim().length > 0;
-}
-
 function killBot(): void {
   spawnSync("tmux", ["kill-session", "-t", SESSION]);
 }
@@ -1472,7 +1466,57 @@ Fix missing import in index.ts (writeFileSync):
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from "fs";
 ```
 
-- [ ] **Step 2: Run the companion locally to verify it starts**
+- [ ] **Step 2: Create the integration smoke test**
+
+Create `companion/src/index.test.ts`:
+```typescript
+import { describe, test, expect, afterAll } from "bun:test";
+
+// Start the server on a test port to avoid conflicting with a running companion
+const TEST_PORT = 7824;
+process.env.COMPANION_TEST_PORT = String(TEST_PORT);
+
+// Minimal config override for tests — no real credentials needed for HTTP routing
+const BASE = `http://localhost:${TEST_PORT}`;
+
+describe("companion HTTP server", () => {
+  test("GET /health returns ok", async () => {
+    const res = await fetch(`${BASE}/health`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean };
+    expect(body.ok).toBe(true);
+  });
+
+  test("GET /memory returns empty collections", async () => {
+    const res = await fetch(`${BASE}/memory`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { preferences: unknown[]; facts: unknown[]; learned: unknown[] };
+    expect(Array.isArray(body.preferences)).toBe(true);
+    expect(Array.isArray(body.facts)).toBe(true);
+    expect(Array.isArray(body.learned)).toBe(true);
+  });
+
+  test("GET /cron returns empty array", async () => {
+    const res = await fetch(`${BASE}/cron`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as unknown[];
+    expect(Array.isArray(body)).toBe(true);
+  });
+
+  test("unknown route returns 404", async () => {
+    const res = await fetch(`${BASE}/unknown`);
+    expect(res.status).toBe(404);
+  });
+});
+```
+
+Note: this test requires `index.ts` to accept a `COMPANION_TEST_PORT` env var override for the port and use an in-memory/temp DB. Add this to `config.ts`:
+```typescript
+httpPort: parseInt(process.env.COMPANION_TEST_PORT ?? "7823", 10),
+```
+(replace the hardcoded `7823` with this expression — the env var is only set during tests).
+
+- [ ] **Step 3: Run the companion locally to verify it starts**
 
 First ensure `.env` has the required keys. Then:
 
@@ -1485,20 +1529,20 @@ kill %1
 
 Expected: `{"ok":true}`
 
-- [ ] **Step 3: Run all tests**
+- [ ] **Step 4: Run all tests**
 
 ```bash
 cd /Users/nischal/projects/claude-telegram-bot/companion && bun test
 ```
 
-Expected: all tests pass.
+Expected: all tests pass (store, registry, heartbeat helpers, integration smoke tests).
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 cd /Users/nischal/projects/claude-telegram-bot
-git add companion/src/index.ts
-git commit -m "feat: add companion entry point and HTTP server"
+git add companion/src/index.ts companion/src/index.test.ts
+git commit -m "feat: add companion entry point, HTTP server, and integration smoke tests"
 ```
 
 ---
