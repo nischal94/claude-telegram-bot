@@ -26,12 +26,20 @@ export function createMemoryRouter(store: MemoryStore, snapshotPath: string) {
         } else {
           return Response.json({ error: "unknown op" }, { status: 400 });
         }
-        writeSnapshot(snapshotPath, store.getAll());
-        return Response.json({ ok: true });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         return Response.json({ error: msg }, { status: 422 });
       }
+
+      try {
+        writeSnapshot(snapshotPath, store.getAll());
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[memory] Failed to write snapshot: ${msg}`);
+        return Response.json({ error: "snapshot write failed", detail: msg }, { status: 500 });
+      }
+
+      return Response.json({ ok: true });
     },
 
     handleGet(): Response {
@@ -39,8 +47,14 @@ export function createMemoryRouter(store: MemoryStore, snapshotPath: string) {
     },
 
     handleSnapshot(): Response {
-      writeSnapshot(snapshotPath, store.getAll());
-      return Response.json({ ok: true });
+      try {
+        writeSnapshot(snapshotPath, store.getAll());
+        return Response.json({ ok: true });
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[memory] Failed to write snapshot: ${msg}`);
+        return Response.json({ error: "snapshot write failed", detail: msg }, { status: 500 });
+      }
     },
   };
 }
