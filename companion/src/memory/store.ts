@@ -70,14 +70,18 @@ export class MemoryStore {
   add(entry: MemoryEntry): void {
     checkInjection(entry.value);
     checkInjection(entry.key);
-    this.db.run(
-      "INSERT INTO memories (type, key, value, source) VALUES (?, ?, ?, ?)",
-      [entry.type, entry.key, entry.value, entry.source]
-    );
-    this.enforceLimit(entry.type);
+    const doAdd = this.db.transaction(() => {
+      this.db.run(
+        "INSERT INTO memories (type, key, value, source) VALUES (?, ?, ?, ?)",
+        [entry.type, entry.key, entry.value, entry.source]
+      );
+      this.enforceLimit(entry.type);
+    });
+    doAdd();
   }
 
   replace(entry: { type: MemoryType; key: string; value: string }): void {
+    checkInjection(entry.key);
     checkInjection(entry.value);
     const result = this.db.run(
       "UPDATE memories SET value = ?, updated = CURRENT_TIMESTAMP WHERE type = ? AND key = ?",
@@ -106,8 +110,7 @@ export class MemoryStore {
 
   private enforceLimit(type: MemoryType): void {
     const limit = LIMITS[type];
-    // For preference: drop most recently added (reverse insertion order = highest id first)
-    // For fact/learned: drop oldest (lowest id first)
+    // For preference: keep most recently added (newest first), drop oldest. For fact/learned: keep oldest, drop newest.
     const order = type === "preference" ? "DESC" : "ASC";
     const rows = this.db
       .query(`SELECT id, key, value FROM memories WHERE type = ? ORDER BY id ${order}`)
