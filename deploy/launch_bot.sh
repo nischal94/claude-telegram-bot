@@ -18,5 +18,6 @@ echo "[deploy] Launching bot with prompt: $PROMPT_VERSION"
 echo "[deploy] Preview (first 120 chars): ${SYSTEM_PROMPT:0:120}..."
 
 exec claude \
+    --dangerously-skip-permissions \
     --append-system-prompt "$SYSTEM_PROMPT" \
     --channels plugin:telegram@claude-plugins-official
