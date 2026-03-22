@@ -26,7 +26,11 @@ function parseEnvFile(path: string): Record<string, string> {
       result[key] = value;
     }
     return result;
-  } catch {
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      console.error(`[config] Failed to read env file at ${path}: ${(err as Error).message}`);
+    }
     return {};
   }
 }
