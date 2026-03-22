@@ -33,8 +33,6 @@ export async function executeJob(job: CronJob, telegram: TelegramClient, apiKey:
       proc.exited,
     ]);
 
-    clearTimeout(timeout);
-
     if (exitCode !== 0) {
       throw new Error(`[executor] claude exited ${exitCode}: ${stderr.slice(0, 500)}`);
     }
@@ -42,11 +40,12 @@ export async function executeJob(job: CronJob, telegram: TelegramClient, apiKey:
     const output = stdout.slice(0, MAX_OUTPUT);
     await telegram.sendMessageWithRetry(output || "(no output)");
   } catch (e: unknown) {
-    clearTimeout(timeout);
     if (controller.signal.aborted) {
       proc.kill();
       throw new Error(`[executor] claude timed out after ${TIMEOUT_MS / 1000}s`);
     }
     throw e;
+  } finally {
+    clearTimeout(timeout);
   }
 }

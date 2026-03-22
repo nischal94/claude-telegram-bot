@@ -60,7 +60,9 @@ export function createCronRouter(registry: CronRegistry, scheduler: CronSchedule
         await scheduler.runNow(id);
         return Response.json({ ok: true });
       } catch (e: unknown) {
-        return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 422 });
+        const msg = e instanceof Error ? e.message : String(e);
+        const status = msg.startsWith("job not found") ? 404 : 422;
+        return Response.json({ error: msg }, { status });
       }
     },
   };
