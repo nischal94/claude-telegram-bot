@@ -15,8 +15,15 @@ function log(logPath: string, message: string): void {
   appendFileSync(logPath, `${ts} ${message}\n`, "utf-8");
 }
 
-function killBot(): void {
-  spawnSync("tmux", ["kill-session", "-t", SESSION]);
+function killBot(logPath: string): void {
+  const result = spawnSync("tmux", ["kill-session", "-t", SESSION]);
+  if (result.error) {
+    log(logPath, `KILL ERROR: tmux not found or failed: ${result.error.message}`);
+  } else if (result.status !== 0) {
+    // Non-zero is expected if the session doesn't exist — log at debug level
+    const stderr = (result.stderr?.toString() ?? "").trim();
+    log(logPath, `KILL: tmux exited ${result.status}${stderr ? `: ${stderr}` : ""}`);
+  }
 }
 
 async function waitForBotRestart(timeoutMs: number): Promise<boolean> {
@@ -60,6 +67,7 @@ export class RecoveryManager {
       log(this.healthLogPath, "ESCALATED — backing off 1 hour");
       await this.telegram.sendMessageWithRetry(msg).catch(() => {});
       this.backoffUntil = Date.now() + BACKOFF_MS;
+      this.attempts = []; // Reset so self-recovery is possible after backoff expires
       return;
     }
 
@@ -67,7 +75,7 @@ export class RecoveryManager {
     log(this.healthLogPath, `RECOVERY attempt ${attempt}/${MAX_ATTEMPTS}`);
     this.attempts.push({ time: Date.now() });
 
-    killBot();
+    killBot(this.healthLogPath);
     const recovered = await waitForBotRestart(RECOVERY_TIMEOUT_MS);
     if (recovered) {
       log(this.healthLogPath, "RECOVERED");

@@ -49,7 +49,10 @@ export class HeartbeatWatchdog {
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
   }
 
   private async tick(): Promise<void> {
