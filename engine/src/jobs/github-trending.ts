@@ -50,6 +50,13 @@ export async function fetchTrending(period: "weekly" | "monthly"): Promise<Trend
     repos.push({ rank: i + 1, owner, name, description, starsGained: starsGained || "?" });
   }
 
+  // Sort descending by stars gained, then re-assign ranks
+  repos.sort((a, b) => {
+    const parse = (s: string) => parseInt(s.replace(/,/g, ""), 10) || 0;
+    return parse(b.starsGained) - parse(a.starsGained);
+  });
+  repos.forEach((r, i) => { r.rank = i + 1; });
+
   return repos;
 }
 
