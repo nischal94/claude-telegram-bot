@@ -34,6 +34,34 @@ export class TelegramClient {
     }
   }
 
+  async sendPhoto(imagePath: string, caption?: string): Promise<void> {
+    const form = new FormData();
+    form.append("chat_id", this.chatId);
+    form.append("photo", Bun.file(imagePath));
+    if (caption) form.append("caption", caption);
+
+    const res = await fetch(`${BASE}/bot${this.token}/sendPhoto`, {
+      method: "POST",
+      body: form,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`[telegram] sendPhoto failed: ${res.status} ${body}`);
+    }
+  }
+
+  async sendPhotoWithRetry(imagePath: string, caption?: string, attempts = 3): Promise<void> {
+    for (let i = 0; i < attempts; i++) {
+      try {
+        await this.sendPhoto(imagePath, caption);
+        return;
+      } catch (e) {
+        if (i === attempts - 1) throw e;
+        await Bun.sleep((2 ** i) * 1000);
+      }
+    }
+  }
+
   // Poll for updates containing a specific pong nonce.
   // Returns true if pong received within timeoutMs.
   //
