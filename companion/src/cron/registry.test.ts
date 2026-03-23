@@ -58,4 +58,17 @@ describe("CronRegistry", () => {
     expect(registry2.list()).toHaveLength(1);
     registry2.close();
   });
+
+  test("create shell job with command array", () => {
+    const id = registry.create({
+      id: "my-shell-job",
+      schedule: "0 9 * * 1",
+      type: "shell",
+      command: ["/usr/bin/bun", "run", "/abs/path/script.ts"],
+      delivery: "telegram",
+    });
+    const job = registry.get(id)!;
+    expect(job.type).toBe("shell");
+    expect(job.command).toEqual(["/usr/bin/bun", "run", "/abs/path/script.ts"]);
+  });
 });

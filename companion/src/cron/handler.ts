@@ -19,6 +19,9 @@ export function createCronRouter(registry: CronRegistry, scheduler: CronSchedule
       if (body.type === "agent" && !body.prompt) {
         return Response.json({ error: "prompt required for agent jobs" }, { status: 400 });
       }
+      if (body.type === "shell" && !body.command?.length) {
+        return Response.json({ error: "command required for shell jobs" }, { status: 400 });
+      }
       try {
         const id = registry.create(body);
         return Response.json({ ok: true, id });

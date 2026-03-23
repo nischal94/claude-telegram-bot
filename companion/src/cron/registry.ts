@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, watch } from "fs";
 import { dirname } from "path";
 
-export type JobType = "reminder" | "agent";
+export type JobType = "reminder" | "agent" | "shell";
 
 export interface CronJob {
   id: string;
@@ -9,6 +9,7 @@ export interface CronJob {
   type: JobType;
   message?: string;   // required for reminder
   prompt?: string;    // required for agent
+  command?: string[]; // required for shell
   delivery: "telegram";
   enabled: boolean;
   created: string;
