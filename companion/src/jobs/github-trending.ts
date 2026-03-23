@@ -53,6 +53,14 @@ export async function fetchTrending(period: "weekly" | "monthly"): Promise<Trend
   return repos;
 }
 
+function esc(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 export async function renderCard(
   repos: TrendingRepo[],
   period: "weekly" | "monthly",
@@ -65,10 +73,10 @@ export async function renderCard(
     <div class="row">
       <span class="rank">${String(r.rank).padStart(2, "0")}</span>
       <div class="repo">
-        <div class="repo-name">${r.owner}/${r.name}</div>
-        <div class="repo-desc">${r.description || "No description"}</div>
+        <div class="repo-name">${esc(r.owner)}/${esc(r.name)}</div>
+        <div class="repo-desc">${esc(r.description) || "No description"}</div>
       </div>
-      <span class="stars">+${r.starsGained} ★</span>
+      <span class="stars">+${esc(r.starsGained)} ★</span>
     </div>
   `).join("\n");
 
@@ -93,7 +101,7 @@ export async function renderCard(
     await page.screenshot({ path: outputPath as `${string}.png`, fullPage: false });
   } finally {
     await browser.close();
-    try { unlinkSync(tmpHtml); } catch {}
+    try { unlinkSync(tmpHtml); } catch (e) { console.warn("[github-trending] failed to clean up temp HTML:", e); }
   }
 }
 
@@ -114,7 +122,7 @@ export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
   } catch (e) {
     console.error(`[github-trending] image send failed, falling back to text:`, e);
   } finally {
-    try { unlinkSync(tmpPath); } catch {}
+    try { unlinkSync(tmpPath); } catch (e) { console.warn("[github-trending] failed to clean up temp PNG:", e); }
   }
 
   // Text fallback
