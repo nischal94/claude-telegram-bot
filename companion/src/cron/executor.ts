@@ -10,6 +10,40 @@ export async function executeJob(job: CronJob, telegram: TelegramClient, apiKey:
     return;
   }
 
+  if (job.type === "shell") {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+    const proc = Bun.spawn(job.command!, {
+      env: { ...process.env },
+      stdout: "pipe",
+      stderr: "pipe",
+      signal: controller.signal,
+    });
+
+    try {
+      const [, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+
+      if (exitCode !== 0) {
+        throw new Error(`[executor] shell job exited ${exitCode}: ${stderr.slice(0, 500)}`);
+      }
+      // Shell jobs send their own Telegram messages — don't forward stdout
+    } catch (e: unknown) {
+      if (controller.signal.aborted) {
+        proc.kill();
+        throw new Error(`[executor] shell job timed out after ${TIMEOUT_MS / 1000}s`);
+      }
+      throw e;
+    } finally {
+      clearTimeout(timeout);
+    }
+    return;
+  }
+
   // agent job: spawn claude --print using Bun.spawn (async, non-blocking)
   // spawnSync would block the entire event loop for up to 5 minutes, freezing
   // the HTTP server and heartbeat pings. Bun.spawn is async and non-blocking.
