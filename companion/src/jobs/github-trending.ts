@@ -68,6 +68,18 @@ export async function renderCard(
 ): Promise<void> {
   const periodLabel = period === "weekly" ? "this week" : "this month";
   const monthYear = new Date().toLocaleString("en-US", { month: "long", year: "numeric" }).toUpperCase();
+  const now = new Date();
+  let dateRange: string;
+  if (period === "weekly") {
+    const weekAgo = new Date(now);
+    weekAgo.setDate(now.getDate() - 7);
+    const fmt = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    dateRange = `${fmt(weekAgo)} – ${fmt(now)}, ${now.getFullYear()}`;
+  } else {
+    const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const fmt = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    dateRange = `${fmt(firstOfMonth)} – ${fmt(now)}, ${now.getFullYear()}`;
+  }
 
   const rows = repos.map(r => `
     <div class="row">
@@ -84,6 +96,7 @@ export async function renderCard(
   const html = template
     .replace("{{PERIOD_LABEL}}", periodLabel)
     .replace("{{MONTH_YEAR}}", monthYear)
+    .replace("{{DATE_RANGE}}", dateRange)
     .replace("{{ROWS}}", rows);
 
   const tmpHtml = outputPath.replace(/\.png$/, ".html");
