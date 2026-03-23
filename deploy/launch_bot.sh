@@ -17,7 +17,20 @@ PROMPT_VERSION=$(readlink "$EXPERIMENT_DIR/prompts/current.txt" 2>/dev/null || e
 echo "[deploy] Launching bot with prompt: $PROMPT_VERSION"
 echo "[deploy] Preview (first 120 chars): ${SYSTEM_PROMPT:0:120}..."
 
+# Inject memory snapshot and tool instructions if companion is running
+MEMORY_SNAPSHOT="$HOME/.claude/companion/memory-snapshot.md"
+MEMORY_INSTRUCTIONS="$EXPERIMENT_DIR/prompts/memory-tool-instructions.txt"
+
+EXTRA_FLAGS=()
+if [ -f "$MEMORY_SNAPSHOT" ]; then
+    EXTRA_FLAGS+=(--append-system-prompt "$(cat "$MEMORY_SNAPSHOT")")
+fi
+if [ -f "$MEMORY_INSTRUCTIONS" ]; then
+    EXTRA_FLAGS+=(--append-system-prompt "$(cat "$MEMORY_INSTRUCTIONS")")
+fi
+
 exec claude \
     --dangerously-skip-permissions \
     --append-system-prompt "$SYSTEM_PROMPT" \
+    "${EXTRA_FLAGS[@]}" \
     --channels plugin:telegram@claude-plugins-official
