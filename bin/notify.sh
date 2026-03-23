@@ -25,10 +25,19 @@ if [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
     exit 0
 fi
 
-curl -s --max-time 10 -X POST \
-    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-    -d "chat_id=${TELEGRAM_CHAT_ID}" \
-    --data-urlencode "text=${MSG}" \
-    > /dev/null 2>&1 || true
-
+MAX_ATTEMPTS=3
+DELAY=2
+for i in $(seq 1 $MAX_ATTEMPTS); do
+    if curl -s --max-time 10 -X POST \
+        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d "chat_id=${TELEGRAM_CHAT_ID}" \
+        --data-urlencode "text=${MSG}" \
+        > /dev/null 2>&1; then
+        break
+    fi
+    if [ "$i" -lt "$MAX_ATTEMPTS" ]; then
+        sleep $DELAY
+        DELAY=$((DELAY * 2))
+    fi
+done
 exit 0

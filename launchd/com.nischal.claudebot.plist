@@ -39,5 +39,7 @@
     <string>/Users/nischal/.claude/logs/claudebot-launchd.log</string>
     <key>StandardErrorPath</key>
     <string>/Users/nischal/.claude/logs/claudebot-launchd.log</string>
+    <key>SizeLimit</key>
+    <integer>52428800</integer>
 </dict>
 </plist>

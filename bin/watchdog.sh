@@ -46,6 +46,7 @@ check_healthy() {
 
 if check_healthy; then
     # Healthy — nothing to do.
+    log "HEALTHY"
     exit 0
 fi
 
@@ -54,6 +55,7 @@ sleep 5
 
 if check_healthy; then
     # Transient blip — back to healthy.
+    log "HEALTHY (recovered from transient)"
     exit 0
 fi
 
