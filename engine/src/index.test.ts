@@ -18,7 +18,7 @@ import { join } from "path";
 import { homedir } from "os";
 
 // Set up isolated test fixtures
-const testDir = join(homedir(), ".claude", "companion-test");
+const testDir = join(homedir(), ".claude", "engine-test");
 mkdirSync(testDir, { recursive: true });
 
 const store = new MemoryStore(join(testDir, "test-memory.db"));
@@ -49,7 +49,7 @@ afterAll(() => {
   registry.close();
 });
 
-describe("companion HTTP server", () => {
+describe("engine HTTP server", () => {
   test("GET /health returns ok", async () => {
     const res = await handler(makeRequest("GET", "/health"));
     expect(res.status).toBe(200);

@@ -8,7 +8,7 @@ let tmpDir: string;
 let store: MemoryStore;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "companion-test-"));
+  tmpDir = mkdtempSync(join(tmpdir(), "engine-test-"));
   store = new MemoryStore(join(tmpDir, "memory.db"));
 });
 
