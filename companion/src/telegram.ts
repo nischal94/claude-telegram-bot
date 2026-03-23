@@ -14,7 +14,7 @@ export class TelegramClient {
     const res = await fetch(`${BASE}/bot${this.token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: this.chatId, text }),
+      body: JSON.stringify({ chat_id: this.chatId, text, parse_mode: "Markdown" }),
     });
     if (!res.ok) {
       const body = await res.text();

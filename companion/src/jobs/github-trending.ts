@@ -40,9 +40,9 @@ export async function fetchTrending(period: "weekly" | "monthly"): Promise<Trend
     const owner = parts[0] ?? "";
     const name = parts[1] ?? "";
     const description = article.querySelector("p")?.text.trim() ?? "";
-    const starsText = article.querySelector("span[data-view-component]")?.text.trim()
-      ?? article.querySelectorAll(".f6 span").find(s => s.text.includes("star"))?.text.trim()
-      ?? "";
+    const spans = article.querySelectorAll("span");
+    const starsSpan = spans.find(s => s.text.includes("stars this week") || s.text.includes("stars this month"));
+    const starsText = starsSpan?.text.trim() ?? "";
     // Extract numeric part: "12,345 stars this week" → "12,345"
     const starsGained = starsText.replace(/\s*stars?\s*(this week|this month)?/i, "").trim();
 
@@ -126,12 +126,29 @@ export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
   }
 
   // Text fallback
-  const lines = [
-    `fastest growing GitHub repos ${periodLabel} (${monthYear})`,
-    "",
-    ...repos.map(r => `${String(r.rank).padStart(2, "0")}. ${r.owner}/${r.name} (+${r.starsGained} ⭐) — ${r.description || "No description"}`),
-  ];
-  await telegram.sendMessageWithRetry(lines.join("\n"));
+  const now = new Date();
+  let dateRange: string;
+  if (period === "weekly") {
+    const weekAgo = new Date(now);
+    weekAgo.setDate(now.getDate() - 7);
+    const fmt = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    dateRange = `${fmt(weekAgo)} – ${fmt(now)}, ${now.getFullYear()}`;
+  } else {
+    dateRange = now.toLocaleString("en-US", { month: "long", year: "numeric" });
+  }
+
+  const header = period === "weekly"
+    ? `📈 *Fastest Growing GitHub Repos This Week*`
+    : `📈 *Fastest Growing GitHub Repos This Month*`;
+
+  const repoLines = repos.map(r => {
+    const stars = r.starsGained !== "?" ? `+${r.starsGained} ⭐` : "⭐";
+    const desc = r.description || "No description";
+    return `*${String(r.rank).padStart(2, "0")}. ${r.owner}/${r.name}* — ${stars}\n_${desc}_`;
+  });
+
+  const message = [header, `_${dateRange}_`, "", ...repoLines].join("\n\n");
+  await telegram.sendMessageWithRetry(message);
 }
 
 // Entry point when run as a script: bun run github-trending.ts [weekly|monthly]
