@@ -2,6 +2,7 @@
 prompts/current.txt
 prompts/*.txt
 !prompts/system-prompt.example.txt
+!prompts/memory-tool-instructions.txt
 
 # Secrets
 *.env
