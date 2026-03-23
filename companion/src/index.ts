@@ -7,6 +7,7 @@ import { createMemoryRouter } from "./memory/handler";
 import { CronRegistry } from "./cron/registry";
 import { CronScheduler } from "./cron/scheduler";
 import { createCronRouter } from "./cron/handler";
+import { registerTrendingCrons } from "./jobs/register-trending-crons";
 import { TelegramClient } from "./telegram";
 import { HeartbeatWatchdog } from "./watchdog/heartbeat";
 import { RecoveryManager } from "./watchdog/recovery";
@@ -72,6 +73,7 @@ export function startCompanion() {
 
   // Cron
   const registry = new CronRegistry(join(config.companionDir, "cron-jobs.json"));
+  registerTrendingCrons(registry);
   const telegram = new TelegramClient(config.telegramBotToken, config.telegramChatId);
   const scheduler = new CronScheduler(registry, telegram, config.anthropicApiKey);
   scheduler.start();
