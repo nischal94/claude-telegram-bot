@@ -43,8 +43,8 @@ export function loadConfig(): Config {
   const required = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ANTHROPIC_API_KEY"];
   const missing = required.filter((k) => !env[k]);
   if (missing.length > 0) {
-    console.error(`[companion] Missing required credentials: ${missing.join(", ")}`);
-    console.error(`[companion] Expected in ${envPath} or environment`);
+    console.error(`[engine] Missing required credentials: ${missing.join(", ")}`);
+    console.error(`[engine] Expected in ${envPath} or environment`);
     process.exit(1);
   }
 
@@ -52,7 +52,7 @@ export function loadConfig(): Config {
     telegramBotToken: env.TELEGRAM_BOT_TOKEN!,
     telegramChatId: env.TELEGRAM_CHAT_ID!,
     anthropicApiKey: env.ANTHROPIC_API_KEY!,
-    companionDir: join(home, ".claude", "companion"),
+    companionDir: join(home, ".claude", "engine"),
     logsDir: join(home, ".claude", "logs"),
     projectDir: join(home, "projects", "claude-telegram-bot"),
     httpPort: parseInt(process.env.COMPANION_TEST_PORT ?? "7823", 10),

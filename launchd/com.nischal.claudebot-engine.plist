@@ -4,13 +4,13 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.nischal.claudebot-companion</string>
+  <string>com.nischal.claudebot-engine</string>
 
   <key>ProgramArguments</key>
   <array>
     <string>/Users/nischal/.bun/bin/bun</string>
     <string>run</string>
-    <string>/Users/nischal/projects/claude-telegram-bot/companion/src/index.ts</string>
+    <string>/Users/nischal/projects/claude-telegram-bot/engine/src/index.ts</string>
   </array>
 
   <key>EnvironmentVariables</key>
@@ -22,7 +22,7 @@
   </dict>
 
   <key>WorkingDirectory</key>
-  <string>/Users/nischal/projects/claude-telegram-bot/companion</string>
+  <string>/Users/nischal/projects/claude-telegram-bot/engine</string>
 
   <key>RunAtLoad</key>
   <true/>
@@ -34,9 +34,9 @@
   <integer>10</integer>
 
   <key>StandardOutPath</key>
-  <string>/Users/nischal/.claude/logs/companion.log</string>
+  <string>/Users/nischal/.claude/logs/engine.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/nischal/.claude/logs/companion.log</string>
+  <string>/Users/nischal/.claude/logs/engine.log</string>
 </dict>
 </plist>

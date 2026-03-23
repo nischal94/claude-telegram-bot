@@ -68,7 +68,7 @@ export class TelegramClient {
   // NOTE: This polls getUpdates independently of the Telegram plugin's poller.
   // Two consumers on the same bot token race for updates — whichever advances
   // offset first causes the other to miss those updates. In practice, the
-  // companion only polls for 90s every 5 minutes and only looks for its own
+  // engine only polls for 90s every 5 minutes and only looks for its own
   // nonce-tagged pong message. The bot plugin processes all other messages.
   // This is an acceptable tradeoff for a personal single-user bot.
   async waitForPong(nonce: string, timeoutMs: number): Promise<boolean> {

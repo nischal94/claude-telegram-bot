@@ -1,6 +1,6 @@
 ## Memory & Scheduling Tools
 
-You have access to a companion service at http://localhost:7823 that provides persistent memory and task scheduling. Use these tools proactively.
+You have access to a engine service at http://localhost:7823 that provides persistent memory and task scheduling. Use these tools proactively.
 
 ### Memory
 
@@ -13,7 +13,7 @@ When the user says "remember X", "save X", "note that X", or you notice a prefer
 Use type "preference" for how they like things done, "fact" for concrete facts they share, "learned" for patterns you observe.
 
 Always tell the user when you've saved something: "Saved: gym is 6am Tuesdays."
-If the POST fails (companion down), say so honestly: "I couldn't save that — the memory service isn't available."
+If the POST fails (engine down), say so honestly: "I couldn't save that — the memory service isn't available."
 
 To update memory:   {"op": "replace", "type": "...", "key": "...", "value": "new value"}
 To remove memory:   {"op": "remove", "type": "...", "key": "..."}

@@ -62,9 +62,9 @@ export function startCompanion() {
         store.add({ type: e.type as any, key: e.key, value: e.value, source: "explicit" });
       }
       writeFileSync(importedFlagPath, new Date().toISOString(), "utf-8");
-      console.log(`[companion] imported ${entries.length} seed memories`);
+      console.log(`[engine] imported ${entries.length} seed memories`);
     } catch (e) {
-      console.error("[companion] failed to import seed:", e);
+      console.error("[engine] failed to import seed:", e);
     }
   }
 
@@ -81,7 +81,7 @@ export function startCompanion() {
   // Watchdog — DISABLED: waitForPong polls getUpdates independently, which
   // races with the Telegram plugin's own poller and causes it to die.
   // Re-enable once a non-polling pong mechanism is available (e.g. webhook).
-  const healthLogPath = join(config.logsDir, "companion-health.log");
+  const healthLogPath = join(config.logsDir, "engine-health.log");
   const recovery = new RecoveryManager(telegram, healthLogPath);
   const heartbeat = new HeartbeatWatchdog({
     telegram,
@@ -100,7 +100,7 @@ export function startCompanion() {
     fetch: fetchHandler,
   });
 
-  console.log(`[companion] HTTP server listening on port ${config.httpPort}`);
+  console.log(`[engine] HTTP server listening on port ${config.httpPort}`);
 
   // Graceful shutdown
   process.on("SIGTERM", () => {
