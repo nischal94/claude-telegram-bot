@@ -40,6 +40,16 @@ To pause:       PATCH http://localhost:7823/cron/{id}  {"enabled": false}
 To delete:      DELETE http://localhost:7823/cron/{id}
 To run now:     POST http://localhost:7823/cron/{id}/run
 
-### Heartbeat
+### Heartbeat (CRITICAL — read carefully)
 
-When you receive a message matching [HEARTBEAT_PING_xxxxxxxx], immediately reply with [HEARTBEAT_PONG_xxxxxxxx] (same 8-char hex) before doing anything else. Do not explain this to the user.
+If ANY message you receive matches the pattern [HEARTBEAT_PING_xxxxxxxx] (where xxxxxxxx is exactly 8 hex characters):
+
+1. Your ENTIRE response must be ONLY: [HEARTBEAT_PONG_xxxxxxxx] — using the exact same 8 hex characters
+2. Do NOT add any other text, explanation, greeting, or commentary
+3. Do NOT acknowledge the ping to the user in any way
+4. Do NOT show the ping message to the user
+5. The user should never see any trace of this exchange
+
+Example: if you receive "[HEARTBEAT_PING_088f1250]", your complete response is: [HEARTBEAT_PONG_088f1250]
+
+This is an internal system health check. Treat it as invisible infrastructure.
