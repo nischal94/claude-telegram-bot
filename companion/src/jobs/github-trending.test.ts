@@ -1,5 +1,10 @@
-import { test, expect, mock, beforeEach, afterEach } from "bun:test";
+import { test, expect, mock, beforeEach, afterEach, describe } from "bun:test";
+import { mkdtempSync, rmSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 import { fetchTrending } from "./github-trending";
+import { CronRegistry } from "../cron/registry";
+import { registerTrendingCrons } from "./register-trending-crons";
 
 // Minimal fixture HTML that mirrors GitHub's trending page structure
 const FIXTURE_HTML = `
@@ -44,4 +49,51 @@ test("fetchTrending requests correct URL for monthly", async () => {
     "https://github.com/trending?since=monthly",
     expect.any(Object)
   );
+});
+
+describe("registerTrendingCrons", () => {
+  let tmpDir: string;
+  let registry: CronRegistry;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "trending-test-"));
+    registry = new CronRegistry(join(tmpDir, "cron-jobs.json"));
+  });
+
+  afterEach(() => {
+    registry.close();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("registers both weekly and monthly jobs", () => {
+    registerTrendingCrons(registry);
+    const weekly = registry.get("github-trending-weekly");
+    const monthly = registry.get("github-trending-monthly");
+    expect(weekly).toBeDefined();
+    expect(monthly).toBeDefined();
+  });
+
+  test("does not create duplicates on repeated calls", () => {
+    registerTrendingCrons(registry);
+    registerTrendingCrons(registry);
+    const all = registry.list();
+    const weeklyJobs = all.filter((j) => j.id === "github-trending-weekly");
+    const monthlyJobs = all.filter((j) => j.id === "github-trending-monthly");
+    expect(weeklyJobs).toHaveLength(1);
+    expect(monthlyJobs).toHaveLength(1);
+  });
+
+  test("creates jobs with correct type, schedule, and command", () => {
+    registerTrendingCrons(registry);
+    const weekly = registry.get("github-trending-weekly")!;
+    const monthly = registry.get("github-trending-monthly")!;
+    expect(weekly.type).toBe("shell");
+    expect(weekly.schedule).toBe("0 17 * * 5");
+    expect(Array.isArray(weekly.command)).toBe(true);
+    expect(weekly.command!.length).toBeGreaterThan(0);
+    expect(monthly.type).toBe("shell");
+    expect(monthly.schedule).toBe("0 9 1 * *");
+    expect(Array.isArray(monthly.command)).toBe(true);
+    expect(monthly.command!.length).toBeGreaterThan(0);
+  });
 });
