@@ -76,7 +76,9 @@ export function startCompanion() {
   const scheduler = new CronScheduler(registry, telegram, config.anthropicApiKey);
   scheduler.start();
 
-  // Watchdog
+  // Watchdog — DISABLED: waitForPong polls getUpdates independently, which
+  // races with the Telegram plugin's own poller and causes it to die.
+  // Re-enable once a non-polling pong mechanism is available (e.g. webhook).
   const healthLogPath = join(config.logsDir, "companion-health.log");
   const recovery = new RecoveryManager(telegram, healthLogPath);
   const heartbeat = new HeartbeatWatchdog({
@@ -84,7 +86,7 @@ export function startCompanion() {
     healthLogPath,
     onHung: () => recovery.recover(),
   });
-  heartbeat.start();
+  // heartbeat.start(); // disabled — causes getUpdates conflict
 
   // HTTP server
   const memoryRouter = createMemoryRouter(store, snapshotPath);
@@ -103,7 +105,7 @@ export function startCompanion() {
     server.stop();
     registry.close();
     store.close();
-    heartbeat.stop();
+    // heartbeat.stop(); // disabled
     process.exit(0);
   });
 
