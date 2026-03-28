@@ -29,6 +29,7 @@ if [ -f "$MEMORY_INSTRUCTIONS" ]; then
     EXTRA_FLAGS+=(--append-system-prompt "$(cat "$MEMORY_INSTRUCTIONS")")
 fi
 
+cd "$EXPERIMENT_DIR"
 exec claude \
     --dangerously-skip-permissions \
     --append-system-prompt "$SYSTEM_PROMPT" \
