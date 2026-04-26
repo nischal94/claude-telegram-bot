@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Send a Telegram message via Bot API.
 # Usage: claude-bot-notify.sh "message text"
-# Reads TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from ~/.claude/.env
+# Reads TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from macOS Keychain.
 # Always exits 0 — notification failure must never block callers.
 set -uo pipefail
 
@@ -11,17 +11,11 @@ if [[ -z "$MSG" ]]; then
     exit 0
 fi
 
-ENV_FILE="$HOME/.claude/.env"
-if [[ ! -f "$ENV_FILE" ]]; then
-    echo "[claude-bot-notify] .env not found: $ENV_FILE" >&2
-    exit 0
-fi
+TELEGRAM_BOT_TOKEN=$(security find-generic-password -s "telegram-bot-token-claudebot" -w 2>/dev/null || true)
+TELEGRAM_CHAT_ID=$(security find-generic-password -s "telegram-chat-id-claudebot" -w 2>/dev/null || true)
 
-TELEGRAM_BOT_TOKEN=$(grep -m1 '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2-)
-TELEGRAM_CHAT_ID=$(grep -m1 '^TELEGRAM_CHAT_ID=' "$ENV_FILE" | cut -d= -f2-)
-
-if [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
-    echo "[claude-bot-notify] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set" >&2
+if [[ -z "$TELEGRAM_BOT_TOKEN" || -z "$TELEGRAM_CHAT_ID" ]]; then
+    echo "[claude-bot-notify] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing from Keychain" >&2
     exit 0
 fi
 
@@ -40,4 +34,6 @@ for i in $(seq 1 $MAX_ATTEMPTS); do
         DELAY=$((DELAY * 2))
     fi
 done
+
+unset TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
 exit 0
