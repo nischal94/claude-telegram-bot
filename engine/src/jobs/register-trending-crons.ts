@@ -7,14 +7,16 @@ export function registerTrendingCrons(registry: CronRegistry): void {
   const jobs = [
     {
       id: "github-trending-weekly",
-      schedule: "0 17 * * 5",
+      // Every Sunday at 10:00 (local time)
+      schedule: "0 10 * * 0",
       type: "shell" as const,
       command: ["bun", "run", scriptPath, "weekly"],
       delivery: "telegram" as const,
     },
     {
       id: "github-trending-monthly",
-      schedule: "0 9 1 * *",
+      // 1st of each month at 10:00 (local time)
+      schedule: "0 10 1 * *",
       type: "shell" as const,
       command: ["bun", "run", scriptPath, "monthly"],
       delivery: "telegram" as const,
