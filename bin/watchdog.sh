@@ -12,6 +12,11 @@ RECOVERY_INTERVAL=5
 RECOVERY_ATTEMPTS=12
 CONTEXT_THRESHOLD=80   # trigger /compact when context % exceeds this
 
+# Stamp file used to suppress repeated OAuth-expiry alerts. The bot will sit
+# silently in this state until a human runs /login, and we don't want a tick-
+# every-30s notification storm. One alert per expiry event is enough.
+OAUTH_ALERT_STAMP="$HOME/.claude/logs/.claudebot-oauth-alert-sent"
+
 mkdir -p "$(dirname "$LOG_FILE")"
 
 log() {
@@ -75,6 +80,30 @@ if [[ -n "$CTX_PCT" ]] && [[ "$CTX_PCT" -gt "$CONTEXT_THRESHOLD" ]] 2>/dev/null;
     fi
     exit 0
 fi
+
+# ── Step 1c: Detect OAuth expiry ─────────────────────────────────────────────
+# When the OAuth session dies, the bot still runs and the bun plugin is still
+# loaded — it just can't call the API. Symptom is a "Please run /login" or
+# "Not logged in" string appearing in the tmux pane. We alert the user once
+# (de-duped via stamp file) and let the bot sit until it gets re-authed.
+PANE_TEXT=""
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+    PANE_TEXT=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || true)
+fi
+
+if [[ -n "$PANE_TEXT" ]] && grep -qE 'Not logged in|Please run /login' <<< "$PANE_TEXT"; then
+    if [[ ! -f "$OAUTH_ALERT_STAMP" ]]; then
+        log "OAuth session expired — bot is alive but unauthenticated. Alerting user."
+        "$NOTIFY" "🔐 Bot OAuth session expired. Run: ~/bin/claude-bot-relogin.sh" || true
+        touch "$OAUTH_ALERT_STAMP"
+    fi
+    # Don't kill or restart — that won't fix auth. Let the human handle it.
+    exit 0
+fi
+
+# Reset the alert stamp once we're past the unauthenticated state, so the next
+# expiry will alert again.
+[[ -f "$OAUTH_ALERT_STAMP" ]] && rm -f "$OAUTH_ALERT_STAMP"
 
 # ── Step 2: Check for bun child (Telegram plugin) ────────────────────────────
 check_healthy() {

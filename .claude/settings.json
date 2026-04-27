@@ -1,5 +1,4 @@
 {
-  "apiKeyHelper": "/Users/nischal/.claude/scripts/anthropic-api-key-helper.sh",
   "enabledPlugins": {
     "telegram@claude-plugins-official": true
   },
