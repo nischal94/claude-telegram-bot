@@ -34,7 +34,14 @@ while IFS= read -r pid; do
 done < <(pgrep -f "claude.*--channels plugin:telegram" 2>/dev/null || true)
 
 if [[ ${#PIDS[@]} -eq 0 ]]; then
-    # Bot not running — launchd will handle it.
+    # No claude --channels process. If the tmux session is still alive, the
+    # wrapper is hung waiting on an empty session — kill the session so the
+    # wrapper exits and launchd respawns it. Otherwise leave it for launchd.
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
+        log "Stale tmux session with no claude process — killing to trigger relaunch"
+        tmux kill-session -t "$SESSION" 2>/dev/null || true
+        [[ -x "$NOTIFY" ]] && "$NOTIFY" "⚠️ Bot restarted — claude CLI died inside live tmux session" || true
+    fi
     exit 0
 fi
 
