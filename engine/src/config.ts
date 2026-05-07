@@ -1,4 +1,3 @@
-import { readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -12,46 +11,45 @@ export interface Config {
   httpPort: number;
 }
 
-function parseEnvFile(path: string): Record<string, string> {
-  try {
-    const content = readFileSync(path, "utf-8");
-    const result: Record<string, string> = {};
-    for (const line of content.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const eq = trimmed.indexOf("=");
-      if (eq === -1) continue;
-      const key = trimmed.slice(0, eq).trim();
-      const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
-      result[key] = value;
-    }
-    return result;
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") {
-      console.error(`[config] Failed to read env file at ${path}: ${(err as Error).message}`);
-    }
-    return {};
-  }
+const KEYCHAIN_SERVICES = {
+  TELEGRAM_BOT_TOKEN: "telegram-bot-token-claudebot",
+  TELEGRAM_CHAT_ID: "telegram-chat-id-claudebot",
+  ANTHROPIC_API_KEY: "anthropic-api-claudebot",
+} as const;
+
+function readKeychain(service: string): string | undefined {
+  const proc = Bun.spawnSync(["security", "find-generic-password", "-s", service, "-w"]);
+  if (proc.exitCode !== 0) return undefined;
+  const value = proc.stdout.toString().trim();
+  return value || undefined;
 }
 
 export function loadConfig(): Config {
   const home = homedir();
-  const envPath = join(home, ".claude", ".env");
-  const env = { ...parseEnvFile(envPath), ...process.env };
 
-  const required = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ANTHROPIC_API_KEY"];
-  const missing = required.filter((k) => !env[k]);
+  const resolve = (key: keyof typeof KEYCHAIN_SERVICES): string | undefined =>
+    process.env[key] ?? readKeychain(KEYCHAIN_SERVICES[key]);
+
+  const telegramBotToken = resolve("TELEGRAM_BOT_TOKEN");
+  const telegramChatId = resolve("TELEGRAM_CHAT_ID");
+  const anthropicApiKey = resolve("ANTHROPIC_API_KEY");
+
+  const missing = [
+    !telegramBotToken && "TELEGRAM_BOT_TOKEN",
+    !telegramChatId && "TELEGRAM_CHAT_ID",
+    !anthropicApiKey && "ANTHROPIC_API_KEY",
+  ].filter((x): x is string => Boolean(x));
+
   if (missing.length > 0) {
     console.error(`[engine] Missing required credentials: ${missing.join(", ")}`);
-    console.error(`[engine] Expected in ${envPath} or environment`);
+    console.error(`[engine] Expected in macOS Keychain (services: ${missing.map((k) => KEYCHAIN_SERVICES[k as keyof typeof KEYCHAIN_SERVICES]).join(", ")}) or environment`);
     process.exit(1);
   }
 
   return {
-    telegramBotToken: env.TELEGRAM_BOT_TOKEN!,
-    telegramChatId: env.TELEGRAM_CHAT_ID!,
-    anthropicApiKey: env.ANTHROPIC_API_KEY!,
+    telegramBotToken: telegramBotToken!,
+    telegramChatId: telegramChatId!,
+    anthropicApiKey: anthropicApiKey!,
     companionDir: join(home, ".claude", "engine"),
     logsDir: join(home, ".claude", "logs"),
     projectDir: join(home, "projects", "claude-telegram-bot"),
