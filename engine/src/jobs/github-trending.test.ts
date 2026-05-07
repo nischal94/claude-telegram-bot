@@ -88,11 +88,11 @@ describe("registerTrendingCrons", () => {
     const weekly = registry.get("github-trending-weekly")!;
     const monthly = registry.get("github-trending-monthly")!;
     expect(weekly.type).toBe("shell");
-    expect(weekly.schedule).toBe("0 17 * * 5");
+    expect(weekly.schedule).toBe("0 10 * * 0");
     expect(Array.isArray(weekly.command)).toBe(true);
     expect(weekly.command!.length).toBeGreaterThan(0);
     expect(monthly.type).toBe("shell");
-    expect(monthly.schedule).toBe("0 9 1 * *");
+    expect(monthly.schedule).toBe("0 10 1 * *");
     expect(Array.isArray(monthly.command)).toBe(true);
     expect(monthly.command!.length).toBeGreaterThan(0);
   });
