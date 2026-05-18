@@ -70,10 +70,11 @@ export function startCompanion() {
   const snapshotPath = join(config.companionDir, "memory-snapshot.md");
   writeSnapshot(snapshotPath, store.getAll());
 
-  // Cron — registry remains for dynamic reminders/agent jobs created via the
-  // HTTP API. The github-trending jobs were migrated to native launchd agents
-  // (launchd/com.nischal.github-trending-{weekly,monthly}.plist) to remove
-  // dependence on the long-running engine for scheduled digests.
+  // Cron — registry remains for dynamic reminder/agent/shell jobs created
+  // at runtime via the HTTP API. The github-trending jobs were migrated to
+  // native launchd agents (launchd/com.nischal.github-trending-{weekly,
+  // monthly}.plist) to remove dependence on the long-running engine for
+  // scheduled digests.
   const registry = new CronRegistry(join(config.companionDir, "cron-jobs.json"));
   const telegram = new TelegramClient(config.telegramBotToken, config.telegramChatId);
   const scheduler = new CronScheduler(registry, telegram, config.anthropicApiKey);
