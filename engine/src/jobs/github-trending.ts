@@ -138,6 +138,7 @@ export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
   try {
     await renderCard(repos, period, tmpPath);
     await telegram.sendPhotoWithRetry(tmpPath, `Fastest growing GitHub repos ${periodLabel}`);
+    console.log(`[github-trending] delivered ${period} digest (image) with ${repos.length} repos`);
     return;
   } catch (e) {
     console.error(`[github-trending] image send failed, falling back to text:`, e);
@@ -169,6 +170,7 @@ export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
 
   const message = [header, `_${dateRange}_`, "", ...repoLines].join("\n\n");
   await telegram.sendMessageWithRetry(message);
+  console.log(`[github-trending] delivered ${period} digest (text fallback) with ${repos.length} repos`);
 }
 
 // Entry point when run as a script: bun run github-trending.ts [weekly|monthly]
