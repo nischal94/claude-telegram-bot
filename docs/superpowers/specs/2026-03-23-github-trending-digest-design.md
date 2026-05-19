@@ -1,5 +1,13 @@
 # GitHub Trending Digest Design
 
+> **Status (superseded by PR #6, 2026-05-18):** The trending crons no longer
+> run inside the engine's in-process node-cron scheduler. Each digest fires
+> as its own native macOS launchd agent. The `register-trending-crons.ts`
+> module and integration snippets shown below were deleted in PR #6. Current
+> implementation: `launchd/com.nischal.github-trending-{weekly,monthly}.plist`
+> and `bin/install-trending-launchd.sh`. This file is retained as a
+> historical record of the original design.
+
 ## Goal
 
 Automatically send a styled image card of the top 10 fastest-growing GitHub repositories to the user's Telegram bot every Friday at 5pm (weekly) and on the 1st of each month at 9am (monthly).

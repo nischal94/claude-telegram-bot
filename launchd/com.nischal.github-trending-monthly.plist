@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.nischal.github-trending-monthly</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/nischal/.bun/bin/bun</string>
+    <string>run</string>
+    <string>/Users/nischal/projects/claude-telegram-bot/engine/src/jobs/github-trending.ts</string>
+    <string>monthly</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/nischal</string>
+    <key>PATH</key>
+    <string>/Users/nischal/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/nischal/projects/claude-telegram-bot/engine</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Day</key>
+    <integer>1</integer>
+    <key>Hour</key>
+    <integer>10</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/nischal/.claude/logs/github-trending-monthly.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/nischal/.claude/logs/github-trending-monthly.log</string>
+</dict>
+</plist>
