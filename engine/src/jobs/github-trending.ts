@@ -1,12 +1,39 @@
 import { parse } from "node-html-parser";
 import { join } from "path";
-import { readFileSync, unlinkSync } from "fs";
+import { homedir } from "os";
+import { readFileSync, unlinkSync, readdirSync } from "fs";
 import puppeteer from "puppeteer-core";
 import { TelegramClient } from "../telegram";
 import { loadConfig } from "../config";
 
-const CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const TEMPLATE_PATH = join(import.meta.dir, "trending-card.html");
+
+// Resolve the newest Playwright-managed chrome-headless-shell binary. This is a
+// headless-only Chromium built for automation, which — unlike the full Google
+// Chrome.app — launches reliably under launchd. Picking the highest cached
+// version keeps this working when Playwright updates its browsers.
+function resolveHeadlessShell(): string {
+  const cacheRoot = join(homedir(), "Library", "Caches", "ms-playwright");
+  let entries: string[];
+  try {
+    entries = readdirSync(cacheRoot);
+  } catch (e) {
+    // Cache dir absent (Playwright never installed) → treat as empty so the
+    // actionable error below fires. Any other fs error is a real problem.
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    entries = [];
+  }
+  const dirs = entries
+    .filter(d => d.startsWith("chromium_headless_shell-"))
+    .sort((a, b) => {
+      const v = (s: string) => parseInt(s.split("-").pop() ?? "0", 10) || 0;
+      return v(b) - v(a);
+    });
+  if (dirs.length === 0) {
+    throw new Error(`[github-trending] no chrome-headless-shell found under ${cacheRoot}. Run: npx playwright install chromium`);
+  }
+  return join(cacheRoot, dirs[0], "chrome-headless-shell-mac-arm64", "chrome-headless-shell");
+}
 
 export interface TrendingRepo {
   rank: number;
@@ -14,6 +41,22 @@ export interface TrendingRepo {
   name: string;
   description: string;
   starsGained: string;
+}
+
+// The monthly digest fires on the 1st of each month and reports GitHub's
+// trailing-month trending — which on the 1st is the previous calendar month.
+// Describe that month in full (e.g. "Jul 1 – Jul 31, 2026"), not the single
+// day the job happens to run. `day 0` of the current month rolls back to the
+// last day of the previous month, which also handles year rollover and
+// variable month lengths correctly.
+function previousMonthLabels(now: Date): { monthYear: string; dateRange: string } {
+  const lastDayPrev = new Date(now.getFullYear(), now.getMonth(), 0);
+  const firstDayPrev = new Date(lastDayPrev.getFullYear(), lastDayPrev.getMonth(), 1);
+  const fmt = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return {
+    monthYear: lastDayPrev.toLocaleString("en-US", { month: "long", year: "numeric" }).toUpperCase(),
+    dateRange: `${fmt(firstDayPrev)} – ${fmt(lastDayPrev)}, ${lastDayPrev.getFullYear()}`,
+  };
 }
 
 export async function fetchTrending(period: "weekly" | "monthly"): Promise<TrendingRepo[]> {
@@ -73,19 +116,18 @@ export async function renderCard(
   period: "weekly" | "monthly",
   outputPath: string
 ): Promise<void> {
-  const periodLabel = period === "weekly" ? "this week" : "this month";
-  const monthYear = new Date().toLocaleString("en-US", { month: "long", year: "numeric" }).toUpperCase();
+  const periodLabel = period === "weekly" ? "this week" : "last month";
   const now = new Date();
+  let monthYear: string;
   let dateRange: string;
   if (period === "weekly") {
+    monthYear = now.toLocaleString("en-US", { month: "long", year: "numeric" }).toUpperCase();
     const weekAgo = new Date(now);
     weekAgo.setDate(now.getDate() - 7);
     const fmt = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
     dateRange = `${fmt(weekAgo)} – ${fmt(now)}, ${now.getFullYear()}`;
   } else {
-    const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const fmt = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    dateRange = `${fmt(firstOfMonth)} – ${fmt(now)}, ${now.getFullYear()}`;
+    ({ monthYear, dateRange } = previousMonthLabels(now));
   }
 
   const rows = repos.map(r => `
@@ -110,8 +152,8 @@ export async function renderCard(
   await Bun.write(tmpHtml, html);
 
   const browser = await puppeteer.launch({
-    executablePath: CHROME_PATH,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    executablePath: resolveHeadlessShell(),
+    args: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
   });
 
   try {
@@ -132,8 +174,7 @@ export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
   const repos = await fetchTrending(period);
   const tmpDir = process.env.TMPDIR ?? "/tmp";
   const tmpPath = `${tmpDir}/trending-${period}-${new Date().toISOString().slice(0, 10)}.png`;
-  const periodLabel = period === "weekly" ? "this week" : "this month";
-  const monthYear = new Date().toLocaleString("en-US", { month: "long", year: "numeric" }).toUpperCase();
+  const periodLabel = period === "weekly" ? "this week" : "last month";
 
   try {
     await renderCard(repos, period, tmpPath);
@@ -155,12 +196,12 @@ export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
     const fmt = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
     dateRange = `${fmt(weekAgo)} – ${fmt(now)}, ${now.getFullYear()}`;
   } else {
-    dateRange = now.toLocaleString("en-US", { month: "long", year: "numeric" });
+    dateRange = previousMonthLabels(now).dateRange;
   }
 
   const header = period === "weekly"
     ? `📈 *Fastest Growing GitHub Repos This Week*`
-    : `📈 *Fastest Growing GitHub Repos This Month*`;
+    : `📈 *Fastest Growing GitHub Repos Last Month*`;
 
   const repoLines = repos.map(r => {
     const stars = r.starsGained !== "?" ? `+${r.starsGained} ⭐` : "⭐";
