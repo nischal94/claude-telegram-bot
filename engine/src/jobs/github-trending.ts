@@ -14,7 +14,16 @@ const TEMPLATE_PATH = join(import.meta.dir, "trending-card.html");
 // version keeps this working when Playwright updates its browsers.
 function resolveHeadlessShell(): string {
   const cacheRoot = join(homedir(), "Library", "Caches", "ms-playwright");
-  const dirs = readdirSync(cacheRoot)
+  let entries: string[];
+  try {
+    entries = readdirSync(cacheRoot);
+  } catch (e) {
+    // Cache dir absent (Playwright never installed) → treat as empty so the
+    // actionable error below fires. Any other fs error is a real problem.
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    entries = [];
+  }
+  const dirs = entries
     .filter(d => d.startsWith("chromium_headless_shell-"))
     .sort((a, b) => {
       const v = (s: string) => parseInt(s.split("-").pop() ?? "0", 10) || 0;
