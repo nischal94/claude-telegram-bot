@@ -176,6 +176,7 @@ export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
   const tmpPath = `${tmpDir}/trending-${period}-${new Date().toISOString().slice(0, 10)}.png`;
   const periodLabel = period === "weekly" ? "this week" : "last month";
 
+  let renderError: string | null = null;
   try {
     await renderCard(repos, period, tmpPath);
     await telegram.sendPhotoWithRetry(tmpPath, `Fastest growing GitHub repos ${periodLabel}`);
@@ -183,6 +184,9 @@ export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
     return;
   } catch (e) {
     console.error(`[github-trending] image send failed, falling back to text:`, e);
+    // Surface the failure in the message so a silent image→text regression
+    // (e.g. the Playwright browser cache was cleared) is visible, not silent.
+    renderError = (e instanceof Error ? e.message : String(e)).split("\n")[0];
   } finally {
     try { unlinkSync(tmpPath); } catch (e) { console.warn("[github-trending] failed to clean up temp PNG:", e); }
   }
@@ -209,7 +213,10 @@ export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
     return `*${String(r.rank).padStart(2, "0")}. ${r.owner}/${r.name}* — ${stars}\n_${desc}_`;
   });
 
-  const message = [header, `_${dateRange}_`, "", ...repoLines].join("\n\n");
+  const alert = renderError
+    ? [`⚠️ _Image render failed, sent as text. Reason: ${renderError}_`]
+    : [];
+  const message = [header, `_${dateRange}_`, "", ...repoLines, ...alert].join("\n\n");
   await telegram.sendMessageWithRetry(message);
   console.log(`[github-trending] delivered ${period} digest (text fallback) with ${repos.length} repos`);
 }
