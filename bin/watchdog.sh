@@ -17,6 +17,17 @@ CONTEXT_THRESHOLD=80   # trigger /compact when context % exceeds this
 # every-30s notification storm. One alert per expiry event is enough.
 OAUTH_ALERT_STAMP="$HOME/.claude/logs/.claudebot-oauth-alert-sent"
 
+# Same idea for the folder-trust prompt: claude waits for a human to answer it,
+# so restarting only brings the prompt back.
+TRUST_ALERT_STAMP="$HOME/.claude/logs/.claudebot-trust-alert-sent"
+
+# Consecutive restarts without a HEALTHY check in between. After MAX_RESTARTS
+# the watchdog stops restarting and alerts once, so an unknown failure costs a
+# handful of messages instead of one every 40s.
+RESTART_COUNT_FILE="$HOME/.claude/logs/.claudebot-restart-count"
+GIVE_UP_STAMP="$HOME/.claude/logs/.claudebot-give-up-alert-sent"
+MAX_RESTARTS=5
+
 mkdir -p "$(dirname "$LOG_FILE")"
 
 log() {
@@ -26,6 +37,29 @@ log() {
 if [[ ! -x "$NOTIFY" ]]; then
     log "WARNING: notifier not found or not executable: $NOTIFY — notifications will be skipped"
 fi
+
+# Counts one more restart and returns 0 if the cap allows it. Otherwise alerts
+# once and returns 1. Sets RESTART_COUNT for the caller's log line.
+claim_restart() {
+    local count
+    count=$(cat "$RESTART_COUNT_FILE" 2>/dev/null || echo 0)
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    if [[ "$count" -ge "$MAX_RESTARTS" ]]; then
+        if [[ ! -f "$GIVE_UP_STAMP" ]]; then
+            log "ERROR: $count restarts without a healthy check — stopped restarting."
+            "$NOTIFY" "🛑 Bot stopped restarting after $count failed attempts. Check: tmux attach -t $SESSION" || true
+            touch "$GIVE_UP_STAMP"
+        fi
+        return 1
+    fi
+    RESTART_COUNT=$((count + 1))
+    echo "$RESTART_COUNT" > "$RESTART_COUNT_FILE"
+    return 0
+}
+
+mark_healthy() {
+    rm -f "$RESTART_COUNT_FILE" "$GIVE_UP_STAMP" "$TRUST_ALERT_STAMP"
+}
 
 # ── Step 1: Find the bot's claude PID ────────────────────────────────────────
 PIDS=()
@@ -38,7 +72,8 @@ if [[ ${#PIDS[@]} -eq 0 ]]; then
     # wrapper is hung waiting on an empty session — kill the session so the
     # wrapper exits and launchd respawns it. Otherwise leave it for launchd.
     if tmux has-session -t "$SESSION" 2>/dev/null; then
-        log "Stale tmux session with no claude process — killing to trigger relaunch"
+        claim_restart || exit 0
+        log "Stale tmux session with no claude process — killing to trigger relaunch ($RESTART_COUNT/$MAX_RESTARTS)"
         tmux kill-session -t "$SESSION" 2>/dev/null || true
         [[ -x "$NOTIFY" ]] && "$NOTIFY" "⚠️ Bot restarted — claude CLI died inside live tmux session" || true
     fi
@@ -66,7 +101,7 @@ if [[ -n "$CTX_PCT" ]] && [[ "$CTX_PCT" -gt "$CONTEXT_THRESHOLD" ]] 2>/dev/null;
     tmux send-keys -t "$SESSION" "/compact" Enter
     # Wait up to 60s for context % to drop below threshold
     COMPACTED=false
-    for (( _=1; _<=12; _++ )); do
+    for (( i=1; i<=12; i++ )); do
         sleep 5
         NEW_PCT=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null \
             | grep -oE '[0-9]+% / [0-9]+(k|m)' \
@@ -118,8 +153,8 @@ check_healthy() {
 }
 
 if check_healthy; then
-    # Healthy — nothing to do.
     log "HEALTHY (context: ${CTX_PCT:-unknown}%)"
+    mark_healthy
     exit 0
 fi
 
@@ -129,16 +164,32 @@ sleep 5
 if check_healthy; then
     # Transient blip — back to healthy.
     log "HEALTHY (recovered from transient)"
+    mark_healthy
     exit 0
 fi
 
-# ── Step 4: Plugin confirmed dead — act ──────────────────────────────────────
-log "Telegram plugin dead (no bun child of PID $CLAUDE_PID). Restarting bot."
+# ── Step 3b: Detect the folder-trust prompt ──────────────────────────────────
+# Claude Code asks whether to trust the project folder before it loads project
+# settings. Headless, nobody answers, so the telegram plugin never starts.
+# Checked only once the plugin is confirmed dead: the pane also shows chat
+# text, which can quote the prompt while the bot is healthy.
+if [[ -n "$PANE_TEXT" ]] && grep -qE 'Yes, I trust this folder|Is this a project you (created or one you )?trust' <<< "$PANE_TEXT"; then
+    if [[ ! -f "$TRUST_ALERT_STAMP" ]]; then
+        log "Folder-trust prompt is blocking startup. Alerting user."
+        "$NOTIFY" "🔒 Bot blocked by folder-trust prompt. Run: tmux attach -t $SESSION, choose 'Yes, I trust this folder', then Ctrl+b d" || true
+        touch "$TRUST_ALERT_STAMP"
+    fi
+    exit 0
+fi
+
+# ── Step 4: Plugin confirmed dead — act, unless restarts keep failing ────────
+claim_restart || exit 0
+log "Telegram plugin dead (no bun child of PID $CLAUDE_PID). Restarting bot ($RESTART_COUNT/$MAX_RESTARTS)."
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
 # ── Step 5: Poll for recovery (claude process + bun child both present) ──────
 RECOVERED=false
-for (( _=1; _<=RECOVERY_ATTEMPTS; _++ )); do
+for (( i=1; i<=RECOVERY_ATTEMPTS; i++ )); do
     sleep "$RECOVERY_INTERVAL"
     NEW_PIDS=()
     while IFS= read -r pid; do
