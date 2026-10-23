@@ -10,8 +10,22 @@ export class TelegramClient {
     this.chatId = chatId;
   }
 
+  // Every request URL contains the token. When fetch itself fails, Bun's error
+  // carries that URL in its message and `path`, and callers log errors whole,
+  // so rethrow a plain error with the token masked. No `cause`: loggers print it.
+  private async request(method: string, init?: RequestInit, query = ""): Promise<Response> {
+    try {
+      return await fetch(`${BASE}/bot${this.token}/${method}${query}`, init);
+    } catch (e) {
+      const reason = (e instanceof Error ? e.message : String(e))
+        .replaceAll(this.token, "<redacted>")
+        .replaceAll(encodeURIComponent(this.token), "<redacted>");
+      throw new Error(`[telegram] ${method} request failed: ${reason}`);
+    }
+  }
+
   async sendMessage(text: string): Promise<void> {
-    const res = await fetch(`${BASE}/bot${this.token}/sendMessage`, {
+    const res = await this.request("sendMessage", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: this.chatId, text, parse_mode: "Markdown" }),
@@ -40,7 +54,7 @@ export class TelegramClient {
     form.append("photo", Bun.file(imagePath));
     if (caption) form.append("caption", caption);
 
-    const res = await fetch(`${BASE}/bot${this.token}/sendPhoto`, {
+    const res = await this.request("sendPhoto", {
       method: "POST",
       body: form,
     });
@@ -75,8 +89,10 @@ export class TelegramClient {
     const deadline = Date.now() + timeoutMs;
     const pattern = `[HEARTBEAT_PONG_${nonce}]`;
     while (Date.now() < deadline) {
-      const res = await fetch(
-        `${BASE}/bot${this.token}/getUpdates?offset=${this.offset}&timeout=5&allowed_updates=["message"]`
+      const res = await this.request(
+        "getUpdates",
+        undefined,
+        `?offset=${this.offset}&timeout=5&allowed_updates=["message"]`
       );
       if (!res.ok) {
         await Bun.sleep(2000);
