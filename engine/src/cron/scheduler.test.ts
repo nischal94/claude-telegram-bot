@@ -182,6 +182,58 @@ describe("CronScheduler ties each run to one instance of a job", () => {
     expect(executed).toEqual(["slow"]);
   });
 
+  test("sync replaces the timer of a job deleted and recreated with the same id", () => {
+    addReminder("r");
+    try {
+      scheduler.sync();
+      const first = scheduler.scheduledInstance("r");
+      expect(first).toBe(registry.get("r")!.created);
+      registry.remove("r");
+      addReminder("r");
+      scheduler.sync();
+      expect(scheduler.scheduledInstance("r")).toBe(registry.get("r")!.created);
+      expect(scheduler.scheduledInstance("r")).not.toBe(first);
+    } finally {
+      scheduler.stop();
+    }
+  });
+
+  test("a run still queued for an old job does not block running its replacement", async () => {
+    addReminder("slow", "first");
+    addReminder("r", "old job");
+    const { release } = gated();
+    scheduler.runNow("slow");
+    scheduler.runNow("r");
+    registry.remove("r");
+    addReminder("r", "new job");
+    scheduler.runNow("r");
+    release();
+    await scheduler.idle();
+    expect(executed).toEqual(["slow", "r"]);
+    expect(sent).toEqual(["first", "new job"]);
+  });
+
+  test("a late failed retry does not overwrite a newer run's failure", async () => {
+    scheduler = new CronScheduler(registry, telegram, {
+      apiKey: "test-key",
+      claudePath: "/unused",
+      agentCwd: tmpDir,
+      deliveryRetryDelayMs: 100,
+      execute: async (job) => {
+        if (job.message === "second run") throw new Error("[executor] claude exited 1: newer failure");
+        return job.message!;
+      },
+    });
+    addReminder("r", "first run");
+    failWhen = (text) => text === "first run";
+    scheduler.runNow("r");
+    await Bun.sleep(20);
+    registry.update("r", { message: "second run" });
+    scheduler.runNow("r");
+    await scheduler.idle();
+    expect(registry.get("r")?.lastError).toContain("newer failure");
+  });
+
   test("a delivery retry for a job deleted in the meantime is not sent", async () => {
     addReminder("r", "deliver me");
     failSends = 1;

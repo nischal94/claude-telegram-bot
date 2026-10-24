@@ -2,7 +2,7 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { agentArgv, executeJob, runProcess, type ExecutorOptions } from "./executor";
+import { agentArgv, agentEnv, executeJob, runProcess, type ExecutorOptions } from "./executor";
 import type { CronJob } from "./registry";
 
 let tmpDir: string;
@@ -102,6 +102,21 @@ describe("executeJob", () => {
     expect(lines[1]).toBe("KEY:test-key");
     expect(lines).toContain("ARG:--restricted");
     expect(lines.at(-1)).toBe("ARG:hello");
+  });
+
+  test("an agent job gets the API key but not the engine's other secrets", () => {
+    const saved = process.env.TELEGRAM_BOT_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN = "telegram-secret";
+    try {
+      const env = agentEnv("test-key");
+      expect(env.ANTHROPIC_API_KEY).toBe("test-key");
+      expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined();
+      expect(env.HOME).toBe(process.env.HOME);
+      expect(env.PATH).toBe(process.env.PATH);
+    } finally {
+      if (saved === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = saved;
+    }
   });
 
   test("a failing agent run throws instead of delivering its partial output", async () => {

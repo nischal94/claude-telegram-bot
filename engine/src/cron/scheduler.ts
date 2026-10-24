@@ -21,12 +21,16 @@ interface RunTarget {
   manual: boolean;
 }
 
+function instanceKey(target: RunTarget): string {
+  return `${target.id}@${target.created}`;
+}
+
 export class CronScheduler {
   private registry: CronRegistry;
   private telegram: TelegramClient;
   private options: SchedulerOptions;
   private execute: NonNullable<SchedulerOptions["execute"]>;
-  private tasks: Map<string, { task: ReturnType<typeof cron.schedule>; schedule: string }> = new Map();
+  private tasks: Map<string, { task: ReturnType<typeof cron.schedule>; schedule: string; created: string }> = new Map();
   private pendingRetries: Set<Promise<void>> = new Set();
 
   constructor(registry: CronRegistry, telegram: TelegramClient, options: SchedulerOptions) {
@@ -65,14 +69,27 @@ export class CronScheduler {
     await Promise.all([...this.pendingRetries]);
   }
 
-  private sync(): void {
+  // Which instance of a job its timer was set up for, for diagnostics and
+  // tests; undefined when the job has no timer.
+  scheduledInstance(jobId: string): string | undefined {
+    return this.tasks.get(jobId)?.created;
+  }
+
+  stop(): void {
+    for (const { task } of this.tasks.values()) task.stop();
+    this.tasks.clear();
+  }
+
+  // Matches timers to the registry: called at start and every minute.
+  sync(): void {
     const jobs = this.registry.list();
     const currentIds = new Set(jobs.map((j) => j.id));
 
-    // Remove tasks for deleted/disabled jobs, or jobs whose schedule changed
-    for (const [id, { task, schedule }] of this.tasks) {
+    // Remove tasks for deleted/disabled jobs, jobs whose schedule changed,
+    // and jobs deleted and recreated with the same id since the last sync.
+    for (const [id, { task, schedule, created }] of this.tasks) {
       const job = this.registry.get(id);
-      if (!currentIds.has(id) || !job?.enabled || job.schedule !== schedule) {
+      if (!currentIds.has(id) || !job?.enabled || job.schedule !== schedule || job.created !== created) {
         task.stop();
         this.tasks.delete(id);
       }
@@ -87,22 +104,28 @@ export class CronScheduler {
       }
       const target: RunTarget = { id: job.id, created: job.created, schedule: job.schedule, manual: false };
       const task = cron.schedule(job.schedule, () => { void this.enqueue(target); });
-      this.tasks.set(job.id, { task, schedule: job.schedule });
+      this.tasks.set(job.id, { task, schedule: job.schedule, created: job.created });
     }
   }
 
   // Serialize job execution — one job at a time to avoid hammering Claude API
   private executionQueue: Promise<void> = Promise.resolve();
-  // Jobs that are queued or running. A job runs at most once at a time, so
-  // a run longer than its interval cannot build up a backlog.
+  // Job instances that are queued or running, keyed by id and created. An
+  // instance runs at most once at a time, so a run longer than its interval
+  // cannot build up a backlog, while a recreated job is not blocked by a
+  // run still queued for the old one.
   private pending: Set<string> = new Set();
+  // Runs started per job instance, failed ones included. A delayed delivery
+  // retry records its error only if no later run has started.
+  private attempts: Map<string, number> = new Map();
 
   private enqueue(target: RunTarget): Promise<void> {
-    if (this.pending.has(target.id)) {
+    const key = instanceKey(target);
+    if (this.pending.has(key)) {
       console.log(`[scheduler] skipping job ${target.id}: already queued or running`);
       return this.executionQueue;
     }
-    this.pending.add(target.id);
+    this.pending.add(key);
     this.executionQueue = this.executionQueue
       .then(() => this.doRun(target))
       .catch((e: unknown) => {
@@ -111,7 +134,7 @@ export class CronScheduler {
         const msg = e instanceof Error ? e.message : String(e);
         console.error(`[scheduler] Unexpected error in job run: ${msg}. Context: id=${target.id}`);
       })
-      .finally(() => this.pending.delete(target.id));
+      .finally(() => this.pending.delete(key));
     return this.executionQueue;
   }
 
@@ -163,6 +186,9 @@ export class CronScheduler {
       return;
     }
     console.log(`[scheduler] running job ${target.id}`);
+    const key = instanceKey(target);
+    const attempt = (this.attempts.get(key) ?? 0) + 1;
+    this.attempts.set(key, attempt);
 
     let output: string | null;
     try {
@@ -205,8 +231,8 @@ export class CronScheduler {
           const msg2 = e2 instanceof Error ? e2.message : String(e2);
           console.error(`[scheduler] job ${target.id} delivery failed twice: ${msg2}`);
           // Only this run's record: a newer run's status must stand.
-          const stillThisRun = this.current(target)?.lastRun === runStamp;
-          if (stillThisRun) this.record(target, () => ({ lastError: `delivery failed: ${msg2}` }));
+          const stillLatestRun = this.attempts.get(key) === attempt;
+          if (stillLatestRun) this.record(target, () => ({ lastError: `delivery failed: ${msg2}` }));
         }
       })();
       this.pendingRetries.add(retry);

@@ -70,7 +70,10 @@ export function isJobRecord(value: unknown): value is CronJob {
       return isNonEmptyString(job.prompt)
         && (job.tools === undefined || (isStringArray(job.tools) && !job.tools.some((t) => t.includes(","))));
     case "shell":
-      return isStringArray(job.command) && job.command.length > 0;
+      // The program must be named; later arguments may be empty strings.
+      return Array.isArray(job.command)
+        && isNonEmptyString(job.command[0])
+        && job.command.every((a) => typeof a === "string");
     default:
       return false;
   }
@@ -184,7 +187,10 @@ export class CronRegistry {
       throw new Error(`[registry] Save refused: the jobs file failed to load, and saving would overwrite it. Context: path=${this.path}`);
     }
     // The file watcher reports changes a little late. Check the file here so
-    // a hand edit that has not been reloaded yet is never overwritten.
+    // a hand edit that has not been reloaded yet is not overwritten. This is
+    // best-effort: an edit saved in the instant between this check and the
+    // rename below is still lost; ruling that out needs a lock shared with
+    // every writer.
     if (this.readDisk() !== this.diskContent) {
       this.reload();
       throw new RegistryConflictError(`[registry] Save refused: the jobs file changed on disk; reloaded it. Context: path=${this.path}`);
@@ -211,9 +217,11 @@ export class CronRegistry {
   create(input: CreateJobInput): string {
     let id = input.id;
     if (this.jobs.has(id)) {
+      // Shorten the base so the suffixed id still fits the 64-character limit.
+      const withSuffix = (n: number): string => `${input.id.slice(0, 64 - `-${n}`.length)}-${n}`;
       let n = 2;
-      while (this.jobs.has(`${id}-${n}`)) n++;
-      id = `${id}-${n}`;
+      while (this.jobs.has(withSuffix(n))) n++;
+      id = withSuffix(n);
     }
     const createdMs = Math.max(Date.now(), this.lastCreatedMs + 1);
     this.lastCreatedMs = createdMs;
@@ -225,6 +233,11 @@ export class CronRegistry {
       lastRun: null,
       runCount: 0,
     };
+    // Never save a job the loader would reject: that would make the whole
+    // file unreadable on the next load.
+    if (!isJobRecord(job)) {
+      throw new Error(`[registry] Refusing to create an invalid job. Context: id=${JSON.stringify(id)} type=${JSON.stringify(input.type)}`);
+    }
     this.commit((jobs) => jobs.set(id, job), (jobs) => jobs.delete(id));
     return id;
   }

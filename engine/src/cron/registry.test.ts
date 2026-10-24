@@ -188,6 +188,17 @@ describe("CronRegistry persistence", () => {
     expect(registry.isWritable()).toBe(false);
   });
 
+  test("a repeated 64-character id gets a suffixed id that still loads", () => {
+    const long = "a".repeat(64);
+    registry.create({ ...job, id: long });
+    const second = registry.create({ ...job, id: long });
+    expect(second.length).toBeLessThanOrEqual(64);
+    expect(second.endsWith("-2")).toBe(true);
+    registry.reload();
+    expect(registry.isWritable()).toBe(true);
+    expect(registry.list()).toHaveLength(2);
+  });
+
   test("a job recreated with the same id gets a different created value", () => {
     registry.create(job);
     const first = registry.get("job")!.created;
@@ -244,6 +255,7 @@ describe("isJobRecord", () => {
     expect(isJobRecord({ ...base, type: "agent", prompt: "p" })).toBe(true);
     expect(isJobRecord({ ...base, type: "agent", prompt: "p", tools: ["Read"] })).toBe(true);
     expect(isJobRecord({ ...base, type: "shell", command: ["/bin/echo", "hi"] })).toBe(true);
+    expect(isJobRecord({ ...base, type: "shell", command: ["/bin/printf", ""] })).toBe(true);
   });
 
   test("rejects the hand-edit mistakes that would change what runs", () => {
@@ -254,6 +266,8 @@ describe("isJobRecord", () => {
     expect(isJobRecord({ ...base, type: "agent", prompt: "p", tools: ["Read,Bash"] })).toBe(false);
     expect(isJobRecord({ ...base, type: "shell", command: "ls -la" })).toBe(false);
     expect(isJobRecord({ ...base, type: "shell", command: [] })).toBe(false);
+    expect(isJobRecord({ ...base, type: "shell", command: ["", "x"] })).toBe(false);
+    expect(isJobRecord({ ...base, type: "shell", command: ["/bin/echo", 1] })).toBe(false);
     expect(isJobRecord({ ...base, type: "script", prompt: "p" })).toBe(false);
   });
 });

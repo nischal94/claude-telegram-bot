@@ -135,6 +135,18 @@ export function agentArgv(job: CronJob, claudePath: string): string[] {
   ];
 }
 
+// Agent jobs get only what the claude CLI needs to run, plus the API key.
+// The engine's other variables, such as a Telegram bot token, stay out.
+const AGENT_ENV_VARS = ["HOME", "PATH", "TMPDIR", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM"];
+
+export function agentEnv(apiKey: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ANTHROPIC_API_KEY: apiKey };
+  for (const name of AGENT_ENV_VARS) {
+    if (process.env[name] !== undefined) env[name] = process.env[name];
+  }
+  return env;
+}
+
 function failure(what: string, result: ProcessResult, timeoutMs: number): Error {
   if (result.timedOut) return new Error(`[executor] ${what} timed out after ${timeoutMs / 1000}s`);
   return new Error(`[executor] ${what} exited ${result.exitCode}: ${result.stderr.slice(0, 500)}`);
@@ -156,7 +168,7 @@ export async function executeJob(job: CronJob, opts: ExecutorOptions): Promise<s
   if (job.type === "agent") {
     const result = await runProcess(agentArgv(job, opts.claudePath), {
       cwd: opts.agentCwd,
-      env: { ...process.env, ANTHROPIC_API_KEY: opts.apiKey },
+      env: agentEnv(opts.apiKey),
       timeoutMs,
     });
     if (result.timedOut || result.exitCode !== 0) throw failure("claude", result, timeoutMs);
