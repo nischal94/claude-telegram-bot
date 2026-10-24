@@ -1,18 +1,24 @@
 version: 2
 
-# Dependabot configuration for the template. By default only GitHub Actions
-# updates are enabled — they're language-agnostic and always safe.
+# Dependabot updates GitHub Actions and the engine's bun dependencies. The
+# pip, npm and docker blocks below are commented-out templates.
 #
-# When using this template for a real project, uncomment the ecosystem
-# block(s) matching your stack. WARNING: enabling on a stale repo will
-# produce a burst of upgrade PRs immediately. Set open-pull-requests-limit
-# low (1-2) at first if the repo has many outdated deps.
+# Each enabled ecosystem waits 7 days after a release before proposing it,
+# so a compromised release has time to be found and pulled first. Give any
+# block you uncomment the same cooldown. The cooldown does not delay
+# security updates.
+#
+# GitHub's dependency graph does not read bun.lock, so Dependabot alerts and
+# security updates cover only the engine's direct dependencies. The
+# engine-tests workflow runs `bun audit` on the whole lockfile.
 
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "monthly"
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
       - "ci"
@@ -48,20 +54,24 @@ updates:
   #     interval: "weekly"
   #   labels: ["dependencies", "docker"]
 
-  - package-ecosystem: "npm"
-    directory: "/"
+  # The engine's manifest and bun.lock live in /engine. The "bun" ecosystem
+  # updates bun.lock together with package.json.
+  - package-ecosystem: "bun"
+    directory: "/engine"
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     labels: ["dependencies", "javascript"]
     commit-message:
       prefix: "chore(deps)"
       include: "scope"
     groups:
-      npm-security:
+      bun-security:
         applies-to: security-updates
         patterns: ["*"]
-      npm-minor-patch:
+      bun-minor-patch:
         applies-to: version-updates
         update-types: ["minor", "patch"]

@@ -5,6 +5,10 @@ name: Dependency Review
 # gate, while Dependabot only opens upgrade PRs AFTER a vuln is shipped.
 #
 # Only runs when a PR actually changes a manifest. Free on public repos.
+#
+# GitHub's dependency graph does not read bun.lock. For the engine this
+# job sees only the direct dependencies in engine/package.json; the
+# engine-tests workflow runs `bun audit` on the whole lockfile.
 
 on:
   pull_request:
@@ -24,6 +28,8 @@ on:
       - "**/Cargo.lock"
       - "**/Gemfile.lock"
       - "**/composer.lock"
+      - "**/bun.lock"
+      - "**/bun.lockb"
 
 permissions:
   contents: read
@@ -34,8 +40,10 @@ jobs:
     name: dependency-review
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/dependency-review-action@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: high
           comment-summary-in-pr: on-failure

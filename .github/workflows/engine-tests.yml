@@ -1,0 +1,43 @@
+name: Engine tests
+
+# Installs the engine exactly as bun.lock pins it, checks every locked
+# package against known advisories, and runs the test suite. The install
+# fails when bun.lock would need changes to satisfy package.json.
+#
+# The audit covers transitive packages, which GitHub's dependency graph
+# cannot see because it does not read bun.lock.
+#
+# Runs on every PR, with no path filter, so it can be made a required
+# status check without blocking PRs that do not touch engine/.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: engine-tests
+    runs-on: ubuntu-latest
+    # The suite runs in about a second; a hang should fail fast instead of
+    # running to GitHub's 6-hour default.
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.11"
+      - name: Install dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Audit locked packages
+        run: bun audit --audit-level=high
+      - name: Run tests
+        run: bun test

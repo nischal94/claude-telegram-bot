@@ -2,7 +2,6 @@ import { parse } from "node-html-parser";
 import { join } from "path";
 import { homedir } from "os";
 import { readFileSync, unlinkSync, readdirSync } from "fs";
-import puppeteer from "puppeteer-core";
 import { TelegramClient } from "../telegram";
 import { loadConfig } from "../config";
 
@@ -147,6 +146,11 @@ export async function renderCard(
     .replace("{{MONTH_YEAR}}", monthYear)
     .replace("{{DATE_RANGE}}", dateRange)
     .replace("{{ROWS}}", rows);
+
+  // Loaded here, not at module top, so importing this module (for
+  // fetchTrending or in tests) does not load the browser library. Load it
+  // before writing the temp HTML, so a failed import leaves no file behind.
+  const { default: puppeteer } = await import("puppeteer-core");
 
   const tmpHtml = outputPath.replace(/\.png$/, ".html");
   await Bun.write(tmpHtml, html);

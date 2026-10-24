@@ -9,7 +9,7 @@
   "dependencies": {
     "node-cron": "^3.0.3",
     "node-html-parser": "^7.1.0",
-    "puppeteer-core": "22"
+    "puppeteer-core": "25.13.0"
   },
   "devDependencies": {
     "@types/node-cron": "^3.0.11"
