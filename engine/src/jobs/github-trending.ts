@@ -2,7 +2,6 @@ import { parse } from "node-html-parser";
 import { join } from "path";
 import { homedir } from "os";
 import { readFileSync, unlinkSync, readdirSync } from "fs";
-import puppeteer from "puppeteer-core";
 import { TelegramClient } from "../telegram";
 import { loadConfig } from "../config";
 
@@ -151,6 +150,9 @@ export async function renderCard(
   const tmpHtml = outputPath.replace(/\.png$/, ".html");
   await Bun.write(tmpHtml, html);
 
+  // Loaded here, not at module top, so importing this module (for
+  // fetchTrending or in tests) does not load the browser library.
+  const { default: puppeteer } = await import("puppeteer-core");
   const browser = await puppeteer.launch({
     executablePath: resolveHeadlessShell(),
     args: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
