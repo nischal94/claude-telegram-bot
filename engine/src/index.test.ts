@@ -389,7 +389,8 @@ describe("publishApiToken", () => {
     });
   });
 
-  test("throws and leaves no temporary file when the directory is not writable", () => {
+  // Root ignores directory permissions, so this check cannot fail the write there
+  test.skipIf(process.getuid?.() === 0)("throws and leaves no temporary file when the directory is not writable", () => {
     withTempDir((dir) => {
       chmodSync(dir, 0o500);
       expect(() => publishApiToken(dir, generateApiToken())).toThrow();
