@@ -1,4 +1,4 @@
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll, spyOn } from "bun:test";
 
 // Must be set before index.ts module loads and calls loadConfig()
 process.env.COMPANION_TEST_PORT = "7824";
@@ -60,6 +60,20 @@ function jsonRequest(method: string, path: string, body: unknown, opts: RequestO
   });
 }
 
+function cronJob(id: string): Record<string, string> {
+  return { id, schedule: "0 0 1 1 *", type: "reminder", message: "x" };
+}
+
+function withTempDir(fn: (dir: string) => void): void {
+  const dir = mkdtempSync(join(tmpdir(), "engine-token-"));
+  try {
+    fn(dir);
+  } finally {
+    chmodSync(dir, 0o700);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 afterAll(() => {
   store.close();
   registry.close();
@@ -117,6 +131,32 @@ describe("engine HTTP request checks", () => {
     expect(res.status).toBe(401);
   });
 
+  test("the right token under another auth scheme is rejected with 401", async () => {
+    const res = await handler(makeRequest("GET", "/cron", { token: null, headers: { Authorization: `Token ${API_TOKEN}` } }));
+    expect(res.status).toBe(401);
+  });
+
+  test("every state-changing route rejects a request without a token and changes nothing", async () => {
+    registry.create(cronJob("keep-me"));
+    const requests = [
+      jsonRequest("POST", "/memory", { op: "add", type: "fact", key: "no-token", value: "x" }, { token: null }),
+      makeRequest("POST", "/memory/snapshot", { token: null }),
+      jsonRequest("POST", "/cron", cronJob("no-token"), { token: null }),
+      jsonRequest("PATCH", "/cron/keep-me", { enabled: false }, { token: null }),
+      makeRequest("DELETE", "/cron/keep-me", { token: null }),
+      makeRequest("POST", "/cron/keep-me/run", { token: null }),
+    ];
+    for (const req of requests) {
+      const res = await handler(req);
+      expect(res.status).toBe(401);
+    }
+    expect(registry.get("no-token")).toBeUndefined();
+    expect(registry.get("keep-me")?.enabled).toBe(true);
+    const memory = await (await handler(makeRequest("GET", "/memory"))).json() as { facts: { key: string }[] };
+    expect(memory.facts.some((f) => f.key === "no-token")).toBe(false);
+    registry.remove("keep-me");
+  });
+
   test("request for a foreign Host is rejected with 403, even with the token", async () => {
     const res = await handler(makeRequest("GET", "/memory", { host: `attacker.test:${PORT}` }));
     expect(res.status).toBe(403);
@@ -142,21 +182,28 @@ describe("engine HTTP request checks", () => {
     expect(res.status).toBe(403);
   });
 
+  test("request with a same-site Sec-Fetch-Site is rejected with 403", async () => {
+    const res = await handler(makeRequest("GET", "/memory", { headers: { "Sec-Fetch-Site": "same-site" } }));
+    expect(res.status).toBe(403);
+  });
+
   test("request with Sec-Fetch-Site none is accepted", async () => {
     const res = await handler(makeRequest("GET", "/memory", { headers: { "Sec-Fetch-Site": "none" } }));
     expect(res.status).toBe(200);
   });
 
   test("text/plain POST /cron is rejected with 415 and creates no job", async () => {
-    const body = JSON.stringify({ id: "ct-probe", schedule: "0 0 1 1 *", type: "reminder", message: "x" });
-    const res = await handler(makeRequest("POST", "/cron", { body, headers: { "Content-Type": "text/plain;charset=UTF-8" } }));
+    const res = await handler(jsonRequest("POST", "/cron", cronJob("ct-probe"), {
+      headers: { "Content-Type": "text/plain;charset=UTF-8" },
+    }));
     expect(res.status).toBe(415);
     expect(registry.get("ct-probe")).toBeUndefined();
   });
 
   test("text/plain POST /memory is rejected with 415", async () => {
-    const body = JSON.stringify({ op: "add", type: "fact", key: "ct-probe", value: "x" });
-    const res = await handler(makeRequest("POST", "/memory", { body, headers: { "Content-Type": "text/plain" } }));
+    const res = await handler(jsonRequest("POST", "/memory", { op: "add", type: "fact", key: "ct-probe", value: "x" }, {
+      headers: { "Content-Type": "text/plain" },
+    }));
     expect(res.status).toBe(415);
   });
 
@@ -165,26 +212,121 @@ describe("engine HTTP request checks", () => {
     expect(res.status).toBe(415);
   });
 
+  test("routes without a body need no Content-Type", async () => {
+    registry.create(cronJob("no-body"));
+    const run = await handler(makeRequest("POST", "/cron/missing-job/run"));
+    expect(run.status).not.toBe(415);
+    const del = await handler(makeRequest("DELETE", "/cron/no-body"));
+    expect(del.status).toBe(200);
+    expect(registry.get("no-body")).toBeUndefined();
+  });
+
   test("POST /cron with the token and JSON content type creates the job", async () => {
-    const res = await handler(jsonRequest("POST", "/cron", { id: "auth-ok", schedule: "0 0 1 1 *", type: "reminder", message: "x" }));
+    const res = await handler(jsonRequest("POST", "/cron", cronJob("auth-ok")));
     expect(res.status).toBe(200);
     expect(registry.get("auth-ok")).toBeDefined();
     registry.remove("auth-ok");
   });
 
   test("JSON content type with a charset parameter is accepted", async () => {
-    const res = await handler(jsonRequest("POST", "/cron", { id: "auth-charset", schedule: "0 0 1 1 *", type: "reminder", message: "x" }, {
+    const res = await handler(jsonRequest("POST", "/cron", cronJob("auth-charset"), {
       headers: { "Content-Type": "application/json; charset=utf-8" },
     }));
     expect(res.status).toBe(200);
+    expect(registry.get("auth-charset")).toBeDefined();
     registry.remove("auth-charset");
+  });
+
+  test("rejection logs never contain the submitted token", async () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await handler(makeRequest("GET", "/memory", { token: "c".repeat(64) }));
+      await handler(makeRequest("GET", "/memory", { host: `attacker.test:${PORT}` }));
+      const logged = warn.mock.calls.flat().join("\n");
+      expect(logged).toContain("auth=mismatch");
+      expect(logged).not.toContain("c".repeat(64));
+      expect(logged).not.toContain(API_TOKEN);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("an empty token is refused when the handler is built", () => {
+    expect(() => buildFetchHandler(memoryRouter, cronRouter, { token: "", port: PORT })).toThrow();
+  });
+});
+
+describe("served over a real socket", () => {
+  // Sends a raw HTTP/1.1 request so the Host header is exactly what a
+  // DNS-rebinding page would send, then returns the status line.
+  async function rawRequest(port: number, host: string): Promise<string> {
+    const chunks: string[] = [];
+    await new Promise<void>((resolve, reject) => {
+      Bun.connect({
+        hostname: "127.0.0.1",
+        port,
+        socket: {
+          open(socket) {
+            socket.write(
+              `GET /memory HTTP/1.1\r\nHost: ${host}\r\nAuthorization: Bearer ${API_TOKEN}\r\nConnection: close\r\n\r\n`
+            );
+          },
+          data(_socket, data) {
+            chunks.push(data.toString());
+          },
+          close() {
+            resolve();
+          },
+          error(_socket, error) {
+            reject(error);
+          },
+        },
+      }).catch(reject);
+    });
+    return chunks.join("").split("\r\n")[0];
+  }
+
+  function startServer(): ReturnType<typeof Bun.serve> {
+    let realHandler: ((req: Request) => Promise<Response>) | undefined;
+    const server = Bun.serve({
+      ...serveOptions({ httpPort: 0 }),
+      fetch: (req) => realHandler!(req),
+    });
+    realHandler = buildFetchHandler(memoryRouter, cronRouter, { token: API_TOKEN, port: server.port });
+    return server;
+  }
+
+  test("a forged Host header on the wire is rejected with 403, even with the token", async () => {
+    const server = startServer();
+    try {
+      expect(await rawRequest(server.port, `attacker.test:${server.port}`)).toBe("HTTP/1.1 403 Forbidden");
+      expect(await rawRequest(server.port, `127.0.0.1:${server.port}`)).toBe("HTTP/1.1 200 OK");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("the server does not accept connections on IPv6 loopback", async () => {
+    const server = startServer();
+    try {
+      const connected = await Bun.connect({
+        hostname: "::1",
+        port: server.port,
+        socket: { data() {}, error() {} },
+      }).then((socket) => {
+        socket.end();
+        return true;
+      }, () => false);
+      expect(connected).toBe(false);
+    } finally {
+      server.stop(true);
+    }
   });
 });
 
 describe("serveOptions", () => {
-  test("binds the HTTP server to IPv4 loopback only", () => {
-    const opts = serveOptions({ httpPort: 7823 });
-    expect(opts).toEqual({ hostname: "127.0.0.1", port: 7823 });
+  test("returns IPv4 loopback as the bind hostname", () => {
+    expect(serveOptions({ httpPort: 7823 })).toEqual({ hostname: "127.0.0.1", port: 7823 });
   });
 });
 
@@ -199,42 +341,54 @@ describe("generateApiToken", () => {
 });
 
 describe("publishApiToken", () => {
-  test("writes the token file and the curl header file, both readable only by the owner", () => {
-    const dir = mkdtempSync(join(tmpdir(), "engine-token-"));
-    try {
+  test("writes the curl header file readable only by the owner", () => {
+    withTempDir((dir) => {
       const token = generateApiToken();
       publishApiToken(dir, token);
-      const tokenPath = join(dir, "api-token");
-      const headerPath = join(dir, "api-auth-header");
-      expect(readFileSync(tokenPath, "utf-8").trim()).toBe(token);
-      expect(readFileSync(headerPath, "utf-8").trim()).toBe(`Authorization: Bearer ${token}`);
-      expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
-      expect(statSync(headerPath).mode & 0o777).toBe(0o600);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+      const path = join(dir, "api-auth-header");
+      expect(readFileSync(path, "utf-8")).toBe(`Authorization: Bearer ${token}\n`);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    });
   });
 
-  test("replaces a world-readable token file with an owner-only one", () => {
-    const dir = mkdtempSync(join(tmpdir(), "engine-token-"));
-    try {
-      const path = join(dir, "api-token");
+  test("the published header line is accepted by the handler", async () => {
+    let line = "";
+    const token = generateApiToken();
+    withTempDir((dir) => {
+      publishApiToken(dir, token);
+      line = readFileSync(join(dir, "api-auth-header"), "utf-8").trim();
+    });
+    const separator = line.indexOf(": ");
+    const tokenHandler = buildFetchHandler(memoryRouter, cronRouter, { token, port: PORT });
+    const res = await tokenHandler(makeRequest("GET", "/memory", {
+      token: null,
+      headers: { [line.slice(0, separator)]: line.slice(separator + 2) },
+    }));
+    expect(res.status).toBe(200);
+  });
+
+  test("replaces a world-readable header file with an owner-only one", () => {
+    withTempDir((dir) => {
+      const path = join(dir, "api-auth-header");
       writeFileSync(path, "old");
       chmodSync(path, 0o644);
       publishApiToken(dir, generateApiToken());
       expect(statSync(path).mode & 0o777).toBe(0o600);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    });
   });
 
   test("leaves no temporary files behind", () => {
-    const dir = mkdtempSync(join(tmpdir(), "engine-token-"));
-    try {
+    withTempDir((dir) => {
       publishApiToken(dir, generateApiToken());
-      expect(readdirSync(dir).sort()).toEqual(["api-auth-header", "api-token"]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+      expect(readdirSync(dir)).toEqual(["api-auth-header"]);
+    });
+  });
+
+  test("throws and leaves no temporary file when the directory is not writable", () => {
+    withTempDir((dir) => {
+      chmodSync(dir, 0o500);
+      expect(() => publishApiToken(dir, generateApiToken())).toThrow();
+      expect(readdirSync(dir)).toEqual([]);
+    });
   });
 });

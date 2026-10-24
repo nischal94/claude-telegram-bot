@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "crypto";
-import { mkdirSync, existsSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { mkdirSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { loadConfig, type Config } from "./config";
 import { MemoryStore } from "./memory/store";
@@ -25,32 +25,40 @@ export function generateApiToken(): string {
   return randomBytes(32).toString("hex");
 }
 
-// Each file is written to a uniquely named temp file created exclusively
-// with mode 0600, then renamed into place, so readers never see a partial
-// token or a wider mode and concurrent writers never share a temp file.
+// Writes through a uniquely named temp file created exclusively with mode
+// 0600, then renames it into place, so readers never see a partial token or
+// a wider mode and concurrent writers never share a temp file. A failed
+// write or rename removes the temp file before rethrowing.
 function writeOwnerOnly(path: string, contents: string): void {
   const tmpPath = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  writeFileSync(tmpPath, contents, { mode: 0o600, flag: "wx" });
-  renameSync(tmpPath, path);
+  try {
+    writeFileSync(tmpPath, contents, { mode: 0o600, flag: "wx" });
+    renameSync(tmpPath, path);
+  } catch (e) {
+    rmSync(tmpPath, { force: true });
+    throw e;
+  }
 }
 
-// Publishes the token for local callers. api-auth-header holds a ready-made
-// header line for `curl -H @file`, which keeps the token out of process
-// arguments. Call this only after the server has bound its port, so a
-// launch that fails to bind never replaces a running engine's token.
+// Publishes the token as a ready-made header line for `curl -H @file`, which
+// keeps the token out of process arguments. Call this only after the server
+// has bound its port, so a launch that fails to bind never replaces a
+// running engine's token.
 export function publishApiToken(dir: string, token: string): void {
-  writeOwnerOnly(join(dir, "api-token"), `${token}\n`);
   writeOwnerOnly(join(dir, "api-auth-header"), `Authorization: Bearer ${token}\n`);
 }
 
-function reject(status: number, error: string, req: Request): Response {
-  console.warn(`[engine] Request rejected: ${error}. Context: ${req.method} ${status}`);
+// Logs the reason and a non-secret detail; never logs header values.
+function reject(status: number, error: string, method: string, path: string, detail: string): Response {
+  console.warn(`[engine] Request rejected: ${error}. Context: ${method} ${path} status=${status} ${detail}`);
   return Response.json({ error }, { status });
 }
 
+const BEARER_PREFIX = "Bearer ";
+
 function tokenMatches(authorization: string | null, token: string): boolean {
-  if (!authorization?.startsWith("Bearer ")) return false;
-  const given = Buffer.from(authorization.slice("Bearer ".length));
+  if (!authorization?.startsWith(BEARER_PREFIX)) return false;
+  const given = Buffer.from(authorization.slice(BEARER_PREFIX.length));
   const expected = Buffer.from(token);
   return given.length === expected.length && timingSafeEqual(given, expected);
 }
@@ -64,6 +72,9 @@ export function buildFetchHandler(
   cronRouter: ReturnType<typeof createCronRouter>,
   options: FetchHandlerOptions
 ): (req: Request) => Promise<Response> {
+  if (options.token.length === 0) {
+    throw new Error("[engine] buildFetchHandler failed: empty API token. Context: options.token");
+  }
   const allowedHosts = new Set([`127.0.0.1:${options.port}`, `localhost:${options.port}`]);
 
   return async function fetch(req: Request): Promise<Response> {
@@ -71,24 +82,35 @@ export function buildFetchHandler(
     const path = url.pathname;
     const method = req.method;
 
-    // Only local, non-browser callers: a foreign Host means DNS rebinding,
-    // and an Origin or cross-site fetch metadata means a web page.
-    if (!allowedHosts.has(url.host)) return reject(403, "host not allowed", req);
-    if (req.headers.has("origin")) return reject(403, "browser origin not allowed", req);
+    // Reject anything that looks like a browser or a rebound DNS name. A Host
+    // other than 127.0.0.1 or localhost on this port can come from DNS
+    // rebinding. An Origin header, or any Sec-Fetch-Site value other than
+    // "none", means the request came from a web page.
+    if (!allowedHosts.has(url.host)) {
+      return reject(403, "host not allowed", method, path, `host=${JSON.stringify(url.host)}`);
+    }
+    if (req.headers.has("origin")) {
+      return reject(403, "browser origin not allowed", method, path, "origin=present");
+    }
     const fetchSite = req.headers.get("sec-fetch-site");
-    if (fetchSite !== null && fetchSite !== "none") return reject(403, "browser origin not allowed", req);
+    if (fetchSite !== null && fetchSite !== "none") {
+      return reject(403, "browser origin not allowed", method, path, `sec-fetch-site=${JSON.stringify(fetchSite)}`);
+    }
 
     // Health check needs no token and returns no data
     if (path === "/health" && method === "GET") return Response.json({ ok: true });
 
-    if (!tokenMatches(req.headers.get("authorization"), options.token)) return reject(401, "missing or invalid token", req);
+    const authorization = req.headers.get("authorization");
+    if (!tokenMatches(authorization, options.token)) {
+      return reject(401, "missing or invalid token", method, path, `auth=${authorization === null ? "absent" : "mismatch"}`);
+    }
 
     const cronPatchMatch = path.match(/^\/cron\/([^/]+)$/);
     const hasJsonBody =
       (method === "POST" && (path === "/memory" || path === "/cron")) ||
       (method === "PATCH" && cronPatchMatch !== null);
     if (hasJsonBody && !isJsonContentType(req.headers.get("content-type"))) {
-      return reject(415, "Content-Type must be application/json", req);
+      return reject(415, "Content-Type must be application/json", method, path, "content-type=not-json");
     }
 
     // Memory routes
@@ -171,7 +193,16 @@ export function startCompanion() {
     port,
     fetch: fetchHandler,
   });
-  publishApiToken(config.companionDir, apiToken);
+  try {
+    publishApiToken(config.companionDir, apiToken);
+  } catch (e) {
+    // Without the published token no caller can authenticate, so serving on
+    // would only look healthy. Exit and let launchd restart the engine.
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`[engine] Failed to publish API token: ${reason}. Context: dir=${config.companionDir}`);
+    server.stop(true);
+    process.exit(1);
+  }
 
   console.log(`[engine] HTTP server listening on ${hostname}:${port}`);
 
