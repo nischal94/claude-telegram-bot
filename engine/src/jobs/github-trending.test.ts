@@ -1,5 +1,5 @@
 import { test, expect, mock, beforeEach, afterEach } from "bun:test";
-import { fetchTrending } from "./github-trending";
+import { buildTextDigest, fetchTrending } from "./github-trending";
 
 // Minimal fixture HTML that mirrors GitHub's trending page structure
 const FIXTURE_HTML = `
@@ -44,4 +44,27 @@ test("fetchTrending requests correct URL for monthly", async () => {
     "https://github.com/trending?since=monthly",
     expect.any(Object)
   );
+});
+
+const NOW = new Date(2026, 9, 25);
+
+test("the text digest escapes scraped fields as HTML", () => {
+  const text = buildTextDigest([{
+    rank: 1, owner: "some_org", name: "a<b>&c", description: "<script>alert(1)</script> & *stars*", starsGained: "1,234",
+  }], "weekly", null, NOW);
+  expect(text).toContain("some_org/a&lt;b&gt;&amp;c");
+  expect(text).toContain("&lt;script&gt;alert(1)&lt;/script&gt; &amp; *stars*");
+  expect(text).not.toContain("<script>");
+});
+
+test("the text digest keeps its own formatting as HTML tags", () => {
+  const text = buildTextDigest([{ rank: 2, owner: "o", name: "n", description: "", starsGained: "?" }], "monthly", null, NOW);
+  expect(text).toContain("<b>Fastest Growing GitHub Repos Last Month</b>");
+  expect(text).toContain("<b>02. o/n</b> — ⭐");
+  expect(text).toContain("<i>No description</i>");
+});
+
+test("the text digest escapes the render error it reports", () => {
+  const text = buildTextDigest([], "weekly", "no <shell> found & failed", NOW);
+  expect(text).toContain("Reason: no &lt;shell&gt; found &amp; failed");
 });

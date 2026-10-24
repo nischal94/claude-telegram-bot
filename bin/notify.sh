@@ -22,8 +22,10 @@ fi
 MAX_ATTEMPTS=3
 DELAY=2
 for i in $(seq 1 $MAX_ATTEMPTS); do
-    if curl -s --max-time 10 -X POST \
-        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    # The URL holds the bot token, so it goes to curl as a config on stdin
+    # (-K -), not as an argument that `ps` could show. printf is a shell
+    # builtin, so the token is never in any process's arguments.
+    if printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" | curl -s --max-time 10 -X POST -K - \
         -d "chat_id=${TELEGRAM_CHAT_ID}" \
         --data-urlencode "text=${MSG}" \
         > /dev/null 2>&1; then

@@ -1,51 +1,126 @@
 const BASE = "https://api.telegram.org";
+const REQUEST_TIMEOUT_MS = 15_000;
+const UPLOAD_TIMEOUT_MS = 60_000;
+const MAX_RETRY_AFTER_MS = 60_000;
+
+// Telegram rejects messages longer than this many characters.
+export const MAX_MESSAGE_CHARS = 4096;
+const TRUNCATION_MARK = "\n…(truncated)";
+
+export interface TelegramClientOptions {
+  timeoutMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface SendOptions {
+  // Plain text unless the caller asks for HTML. Model and job output is
+  // always sent plain, so link text cannot hide a different URL.
+  parseMode?: "HTML";
+  attempts?: number;
+}
+
+// An HTTP error answer from the Bot API.
+export class TelegramApiError extends Error {
+  constructor(message: string, readonly status: number, readonly retryAfterMs?: number) {
+    super(message);
+  }
+}
+
+// Network errors, timeouts, rate limits and server errors may succeed on a
+// later try; any other API error will fail the same way again.
+function isRetryable(e: unknown): boolean {
+  if (e instanceof TelegramApiError) return e.status === 429 || e.status >= 500;
+  return true;
+}
+
+// Cuts text over Telegram's limit and marks the cut, without splitting a
+// character that takes two UTF-16 code units.
+export function fitMessage(text: string): string {
+  if (text.length <= MAX_MESSAGE_CHARS) return text;
+  let end = MAX_MESSAGE_CHARS - TRUNCATION_MARK.length;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end--;
+  return text.slice(0, end) + TRUNCATION_MARK;
+}
 
 export class TelegramClient {
   private token: string;
   private chatId: string;
   private offset = 0;
+  private timeoutMs: number;
+  private sleep: (ms: number) => Promise<void>;
 
-  constructor(token: string, chatId: string) {
+  constructor(token: string, chatId: string, options: TelegramClientOptions = {}) {
     this.token = token;
     this.chatId = chatId;
+    this.timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+    this.sleep = options.sleep ?? ((ms) => Bun.sleep(ms));
+  }
+
+  private redact(text: string): string {
+    return text
+      .replaceAll(this.token, "<redacted>")
+      .replaceAll(encodeURIComponent(this.token), "<redacted>");
   }
 
   // Every request URL contains the token. When fetch itself fails, Bun's error
   // carries that URL in its message and `path`, and callers log errors whole,
   // so rethrow a plain error with the token masked. No `cause`: loggers print it.
-  private async request(method: string, init?: RequestInit, query = ""): Promise<Response> {
+  // Every request has a timeout, so a stalled connection cannot block the
+  // cron queue that waits for it.
+  private async request(method: string, init?: RequestInit, query = "", timeoutMs = this.timeoutMs): Promise<Response> {
     try {
-      return await fetch(`${BASE}/bot${this.token}/${method}${query}`, init);
+      return await fetch(`${BASE}/bot${this.token}/${method}${query}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
     } catch (e) {
-      const reason = (e instanceof Error ? e.message : String(e))
-        .replaceAll(this.token, "<redacted>")
-        .replaceAll(encodeURIComponent(this.token), "<redacted>");
+      const reason = this.redact(e instanceof Error ? e.message : String(e));
       throw new Error(`[telegram] ${method} request failed: ${reason}`);
     }
   }
 
-  async sendMessage(text: string): Promise<void> {
-    const res = await this.request("sendMessage", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: this.chatId, text, parse_mode: "Markdown" }),
-    });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`[telegram] sendMessage failed: ${res.status} ${body}`);
+  private async check(method: string, res: Response): Promise<void> {
+    if (res.ok) return;
+    const body = await res.text();
+    let retryAfterMs: number | undefined;
+    try {
+      const seconds = (JSON.parse(body) as { parameters?: { retry_after?: unknown } }).parameters?.retry_after;
+      if (typeof seconds === "number" && seconds > 0) retryAfterMs = Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
+    } catch {
+      // Not JSON; no retry_after.
+    }
+    throw new TelegramApiError(`[telegram] ${method} failed: ${res.status} ${this.redact(body)}`, res.status, retryAfterMs);
+  }
+
+  // Retries only errors that may succeed later, waiting retry_after on a 429
+  // and backing off 1 s, 2 s, ... otherwise.
+  private async withRetry(attempts: number, send: () => Promise<void>): Promise<void> {
+    for (let i = 0; i < attempts; i++) {
+      try {
+        await send();
+        return;
+      } catch (e) {
+        if (i === attempts - 1 || !isRetryable(e)) throw e;
+        const wait = e instanceof TelegramApiError && e.retryAfterMs !== undefined ? e.retryAfterMs : (2 ** i) * 1000;
+        await this.sleep(wait);
+      }
     }
   }
 
-  async sendMessageWithRetry(text: string, attempts = 3): Promise<void> {
-    for (let i = 0; i < attempts; i++) {
-      try {
-        await this.sendMessage(text);
-        return;
-      } catch (e) {
-        if (i === attempts - 1) throw e;
-        await Bun.sleep((2 ** i) * 1000);
-      }
-    }
+  // Plain text is cut to Telegram's limit with a marker. HTML is sent as
+  // given: cutting it could break a tag, so HTML callers keep it short.
+  async sendMessage(text: string, options: SendOptions = {}): Promise<void> {
+    const body = options.parseMode
+      ? { chat_id: this.chatId, text, parse_mode: options.parseMode }
+      : { chat_id: this.chatId, text: fitMessage(text) };
+    const res = await this.request("sendMessage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    await this.check("sendMessage", res);
+  }
+
+  async sendMessageWithRetry(text: string, options: SendOptions = {}): Promise<void> {
+    await this.withRetry(options.attempts ?? 3, () => this.sendMessage(text, options));
   }
 
   async sendPhoto(imagePath: string, caption?: string): Promise<void> {
@@ -54,26 +129,12 @@ export class TelegramClient {
     form.append("photo", Bun.file(imagePath));
     if (caption) form.append("caption", caption);
 
-    const res = await this.request("sendPhoto", {
-      method: "POST",
-      body: form,
-    });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`[telegram] sendPhoto failed: ${res.status} ${body}`);
-    }
+    const res = await this.request("sendPhoto", { method: "POST", body: form }, "", UPLOAD_TIMEOUT_MS);
+    await this.check("sendPhoto", res);
   }
 
   async sendPhotoWithRetry(imagePath: string, caption?: string, attempts = 3): Promise<void> {
-    for (let i = 0; i < attempts; i++) {
-      try {
-        await this.sendPhoto(imagePath, caption);
-        return;
-      } catch (e) {
-        if (i === attempts - 1) throw e;
-        await Bun.sleep((2 ** i) * 1000);
-      }
-    }
+    await this.withRetry(attempts, () => this.sendPhoto(imagePath, caption));
   }
 
   // Poll for updates containing a specific pong nonce.

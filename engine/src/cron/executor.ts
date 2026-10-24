@@ -4,7 +4,6 @@ import type { CronJob } from "./registry";
 const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const KILL_GRACE_MS = 5000;
 const DRAIN_MS = 2000;
-const MAX_OUTPUT = 3800;
 // Per stream, in characters. Capture stops after the chunk that reaches this
 // size, so the kept output can exceed it by one chunk.
 const MAX_CAPTURE = 1024 * 1024;
@@ -172,7 +171,8 @@ export async function executeJob(job: CronJob, opts: ExecutorOptions): Promise<s
       timeoutMs,
     });
     if (result.timedOut || result.exitCode !== 0) throw failure("claude", result, timeoutMs);
-    return result.stdout.slice(0, MAX_OUTPUT);
+    // The Telegram client cuts long text to its limit and marks the cut.
+    return result.stdout;
   }
 
   throw new Error(`[executor] unknown job type: ${JSON.stringify(job.type)}. Context: id=${job.id}`);
