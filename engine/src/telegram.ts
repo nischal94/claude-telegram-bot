@@ -26,11 +26,19 @@ export class TelegramApiError extends Error {
   }
 }
 
-// Network errors, timeouts, rate limits and server errors may succeed on a
-// later try; any other API error will fail the same way again.
+// The request itself failed: no connection, a timeout, or a body that could
+// not be sent. The token is already masked in the message.
+export class TelegramRequestError extends Error {}
+
+// Request failures, rate limits and server errors may succeed on a later
+// try; any other API error, and anything unexpected, will not.
+//
+// A send that reached Telegram but timed out before the answer arrived is
+// retried too, so the message can arrive twice: the Bot API has no way to
+// make a send idempotent, and a lost alert is worse than a duplicate.
 function isRetryable(e: unknown): boolean {
   if (e instanceof TelegramApiError) return e.status === 429 || e.status >= 500;
-  return true;
+  return e instanceof TelegramRequestError;
 }
 
 // Cuts text over Telegram's limit and marks the cut, without splitting a
@@ -73,13 +81,20 @@ export class TelegramClient {
       return await fetch(`${BASE}/bot${this.token}/${method}${query}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
     } catch (e) {
       const reason = this.redact(e instanceof Error ? e.message : String(e));
-      throw new Error(`[telegram] ${method} request failed: ${reason}`);
+      throw new TelegramRequestError(`[telegram] ${method} request failed: ${reason}`);
     }
   }
 
   private async check(method: string, res: Response): Promise<void> {
     if (res.ok) return;
-    const body = await res.text();
+    // A failed body read must not escape unmasked or lose the status, which
+    // decides whether the error is retried.
+    let body: string;
+    try {
+      body = await res.text();
+    } catch {
+      body = "(response body unreadable)";
+    }
     let retryAfterMs: number | undefined;
     try {
       const seconds = (JSON.parse(body) as { parameters?: { retry_after?: unknown } }).parameters?.retry_after;
@@ -105,12 +120,17 @@ export class TelegramClient {
     }
   }
 
-  // Plain text is cut to Telegram's limit with a marker. HTML is sent as
-  // given: cutting it could break a tag, so HTML callers keep it short.
+  // Plain text is cut to Telegram's limit with a marker, keeping two-unit
+  // (surrogate pair) characters whole; a combined emoji can still be split.
+  // HTML is sent as given, because cutting it could break a tag: HTML
+  // callers must bound their own length.
   async sendMessage(text: string, options: SendOptions = {}): Promise<void> {
+    // No link previews: Telegram would otherwise fetch any URL that
+    // attacker-influenced text contains. The URL itself stays visible.
+    const noPreview = { link_preview_options: { is_disabled: true } };
     const body = options.parseMode
-      ? { chat_id: this.chatId, text, parse_mode: options.parseMode }
-      : { chat_id: this.chatId, text: fitMessage(text) };
+      ? { chat_id: this.chatId, text, parse_mode: options.parseMode, ...noPreview }
+      : { chat_id: this.chatId, text: fitMessage(text), ...noPreview };
     const res = await this.request("sendMessage", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -150,13 +170,21 @@ export class TelegramClient {
     const deadline = Date.now() + timeoutMs;
     const pattern = `[HEARTBEAT_PONG_${nonce}]`;
     while (Date.now() < deadline) {
-      const res = await this.request(
-        "getUpdates",
-        undefined,
-        `?offset=${this.offset}&timeout=5&allowed_updates=["message"]`
-      );
+      let res: Response;
+      try {
+        res = await this.request(
+          "getUpdates",
+          undefined,
+          `?offset=${this.offset}&timeout=5&allowed_updates=["message"]`
+        );
+      } catch (e) {
+        // A failed or timed-out poll is tried again until the deadline.
+        if (!(e instanceof TelegramRequestError)) throw e;
+        await this.sleep(2000);
+        continue;
+      }
       if (!res.ok) {
-        await Bun.sleep(2000);
+        await this.sleep(2000);
         continue;
       }
       const data = await res.json() as { result: { update_id: number; message?: { text?: string } }[] };

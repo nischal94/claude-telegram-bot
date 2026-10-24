@@ -4,6 +4,10 @@
 # Reads TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from macOS Keychain.
 # Always exits 0 — notification failure must never block callers.
 set -uo pipefail
+# The token must never reach a trace, or a child's environment: no xtrace,
+# no auto-export, and drop any export the caller gave these names.
+set +x +a
+unset TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
 
 MSG="${1:-}"
 if [[ -z "$MSG" ]]; then
@@ -20,22 +24,30 @@ if [[ -z "$TELEGRAM_BOT_TOKEN" || -z "$TELEGRAM_CHAT_ID" ]]; then
 fi
 
 MAX_ATTEMPTS=3
-DELAY=2
+DELAY="${CLAUDE_BOT_NOTIFY_DELAY:-2}"
+SENT=0
 for i in $(seq 1 $MAX_ATTEMPTS); do
     # The URL holds the bot token, so it goes to curl as a config on stdin
     # (-K -), not as an argument that `ps` could show. printf is a shell
     # builtin, so the token is never in any process's arguments.
-    if printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" | curl -s --max-time 10 -X POST -K - \
+    # --fail makes an HTTP error (401, 429, 5xx) a failed attempt.
+    if printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" | curl -s --fail --max-time 10 -X POST -K - \
         -d "chat_id=${TELEGRAM_CHAT_ID}" \
         --data-urlencode "text=${MSG}" \
         > /dev/null 2>&1; then
+        SENT=1
         break
     fi
     if [ "$i" -lt "$MAX_ATTEMPTS" ]; then
-        sleep $DELAY
+        sleep "$DELAY"
         DELAY=$((DELAY * 2))
     fi
 done
+
+if [ "$SENT" -eq 0 ]; then
+    # curl's own error text stays hidden; it could include the request.
+    echo "[claude-bot-notify] message not sent after $MAX_ATTEMPTS attempts" >&2
+fi
 
 unset TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
 exit 0

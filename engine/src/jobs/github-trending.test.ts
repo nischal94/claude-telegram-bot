@@ -1,5 +1,5 @@
 import { test, expect, mock, beforeEach, afterEach } from "bun:test";
-import { buildTextDigest, fetchTrending } from "./github-trending";
+import { buildTextDigest, deliverTextDigest, fetchTrending } from "./github-trending";
 
 // Minimal fixture HTML that mirrors GitHub's trending page structure
 const FIXTURE_HTML = `
@@ -62,6 +62,28 @@ test("the text digest keeps its own formatting as HTML tags", () => {
   expect(text).toContain("<b>Fastest Growing GitHub Repos Last Month</b>");
   expect(text).toContain("<b>02. o/n</b> — ⭐");
   expect(text).toContain("<i>No description</i>");
+});
+
+test("the text digest is sent in HTML mode", async () => {
+  const calls: [string, unknown][] = [];
+  const telegram = { sendMessageWithRetry: async (text: string, options?: unknown) => { calls.push([text, options]); } };
+  await deliverTextDigest(telegram as any, [], "weekly", null, NOW);
+  expect(calls).toHaveLength(1);
+  expect(calls[0][1]).toEqual({ parseMode: "HTML" });
+});
+
+test("the text digest cuts long descriptions so the HTML stays under Telegram's limit", () => {
+  // GitHub's limits: owner names up to 39 characters, repo names up to 100.
+  const repos = Array.from({ length: 10 }, (_, i) => ({
+    rank: i + 1, owner: "o".repeat(39), name: "n".repeat(100), description: "<".repeat(400), starsGained: "99,999",
+  }));
+  const text = buildTextDigest(repos, "weekly", "e".repeat(1000), NOW);
+  // Telegram counts the limit after parsing: tags vanish, entities count once.
+  const rendered = text.replace(/<[^>]+>/g, "").replace(/&(lt|gt|amp|quot);/g, "x");
+  expect(rendered.length).toBeLessThanOrEqual(4096);
+  expect(text).toContain("…</i>");
+  // Escaping happens after the cut, so no entity is split.
+  expect(text).not.toMatch(/&[a-z]*…/);
 });
 
 test("the text digest escapes the render error it reports", () => {

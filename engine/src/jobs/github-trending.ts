@@ -195,8 +195,27 @@ export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
     try { unlinkSync(tmpPath); } catch (e) { console.warn("[github-trending] failed to clean up temp PNG:", e); }
   }
 
-  await telegram.sendMessageWithRetry(buildTextDigest(repos, period, renderError, new Date()), { parseMode: "HTML" });
+  await deliverTextDigest(telegram, repos, period, renderError, new Date());
   console.log(`[github-trending] delivered ${period} digest (text fallback) with ${repos.length} repos`);
+}
+
+export async function deliverTextDigest(
+  telegram: Pick<TelegramClient, "sendMessageWithRetry">,
+  repos: TrendingRepo[],
+  period: "weekly" | "monthly",
+  renderError: string | null,
+  now: Date,
+): Promise<void> {
+  await telegram.sendMessageWithRetry(buildTextDigest(repos, period, renderError, now), { parseMode: "HTML" });
+}
+
+// HTML is not cut by the Telegram client, so the digest bounds its own
+// length: 10 repos with these limits stay well under 4096 characters.
+const MAX_DESCRIPTION_CHARS = 200;
+const MAX_ERROR_CHARS = 300;
+
+function clip(text: string, max: number): string {
+  return text.length <= max ? text : text.slice(0, max - 1) + "…";
 }
 
 // The text fallback, as Telegram HTML. Every scraped field and the error
@@ -225,12 +244,12 @@ export function buildTextDigest(
 
   const repoLines = repos.map(r => {
     const stars = r.starsGained !== "?" ? `+${esc(r.starsGained)} ⭐` : "⭐";
-    const desc = r.description || "No description";
+    const desc = clip(r.description || "No description", MAX_DESCRIPTION_CHARS);
     return `<b>${String(r.rank).padStart(2, "0")}. ${esc(r.owner)}/${esc(r.name)}</b> — ${stars}\n<i>${esc(desc)}</i>`;
   });
 
   const alert = renderError
-    ? [`⚠️ <i>Image render failed, sent as text. Reason: ${esc(renderError)}</i>`]
+    ? [`⚠️ <i>Image render failed, sent as text. Reason: ${esc(clip(renderError, MAX_ERROR_CHARS))}</i>`]
     : [];
   return [header, `<i>${esc(dateRange)}</i>`, "", ...repoLines, ...alert].join("\n\n");
 }

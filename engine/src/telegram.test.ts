@@ -31,7 +31,6 @@ async function caught(run: () => Promise<unknown>): Promise<unknown> {
 const calls: [string, string, (c: TelegramClient) => Promise<unknown>][] = [
   ["sendMessage", "sendMessage", (c) => c.sendMessage("hi")],
   ["sendPhoto", "sendPhoto", (c) => c.sendPhoto("/nonexistent.png", "cap")],
-  ["waitForPong", "getUpdates", (c) => c.waitForPong("n1", 5_000)],
 ];
 
 for (const [label, apiMethod, call] of calls) {
@@ -93,7 +92,17 @@ describe("message format", () => {
   test("sends plain text by default, with no parse_mode", async () => {
     const { bodies } = recordingFetch([ok]);
     await client().sendMessage("*not bold* _not italic_ [x](http://evil.test)");
-    expect(bodies[0]).toEqual({ chat_id: "42", text: "*not bold* _not italic_ [x](http://evil.test)" });
+    expect(bodies[0]).toEqual({
+      chat_id: "42",
+      text: "*not bold* _not italic_ [x](http://evil.test)",
+      link_preview_options: { is_disabled: true },
+    });
+  });
+
+  test("HTML messages also have link previews turned off", async () => {
+    const { bodies } = recordingFetch([ok]);
+    await client().sendMessage("<b>x</b> https://evil.test", { parseMode: "HTML" });
+    expect(bodies[0]).toMatchObject({ link_preview_options: { is_disabled: true } });
   });
 
   test("sends HTML only when the caller asks for it", async () => {
@@ -111,7 +120,9 @@ describe("message format", () => {
   });
 
   test("never cuts a character in half", () => {
-    const text = fitMessage("a" + "😀".repeat(3000));
+    // Without a prefix, the cut point falls between the two halves of an
+    // emoji, so this fails if the surrogate check is removed.
+    const text = fitMessage("😀".repeat(3000));
     expect(text.length).toBeLessThanOrEqual(4096);
     expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(text)).toBe(false);
   });
@@ -166,11 +177,60 @@ describe("retries", () => {
     expect(sleeps).toEqual([7000]);
   });
 
+  test("an error response whose body cannot be read keeps its status and is not retried", async () => {
+    const unreadable = async () => {
+      const res = new Response("x", { status: 400 });
+      Object.defineProperty(res, "text", { value: () => Promise.reject(new Error(`stream failed for bot${TOKEN}`)) });
+      return res;
+    };
+    const { fn } = recordingFetch([unreadable, ok]);
+    const err = await caught(() => client().sendMessageWithRetry("hi"));
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect((err as Error).message).toContain("400");
+    expect(Bun.inspect(err)).not.toContain(TOKEN);
+  });
+
+  test("a 429 without retry_after backs off like any retryable error", async () => {
+    const sleeps: number[] = [];
+    recordingFetch([status(429), ok]);
+    await client(sleeps).sendMessageWithRetry("hi");
+    expect(sleeps).toEqual([1000]);
+  });
+
+  test("a long retry_after is capped at 60 seconds", async () => {
+    const sleeps: number[] = [];
+    recordingFetch([status(429, '{"ok":false,"parameters":{"retry_after":3600}}'), ok]);
+    await client(sleeps).sendMessageWithRetry("hi");
+    expect(sleeps).toEqual([60_000]);
+  });
+
+  test("a retry_after that is not a number is ignored", async () => {
+    const sleeps: number[] = [];
+    recordingFetch([status(429, '{"ok":false,"parameters":{"retry_after":"soon"}}'), ok]);
+    await client(sleeps).sendMessageWithRetry("hi");
+    expect(sleeps).toEqual([1000]);
+  });
+
   test("gives up after the last attempt and throws the last error", async () => {
     const { fn } = recordingFetch([status(500), status(500), status(500), ok]);
     const err = await caught(() => client().sendMessageWithRetry("hi"));
     expect(fn).toHaveBeenCalledTimes(3);
     expect((err as Error).message).toContain("500");
+  });
+
+  test("waitForPong keeps polling after a failed poll", async () => {
+    const sleeps: number[] = [];
+    const pong = JSON.stringify({ ok: true, result: [{ update_id: 1, message: { text: "[HEARTBEAT_PONG_n1]" } }] });
+    recordingFetch([networkError, async () => new Response(pong)]);
+    expect(await client(sleeps).waitForPong("n1", 5_000)).toBe(true);
+    expect(sleeps).toEqual([2000]);
+  });
+
+  test("waitForPong returns false at the deadline when every poll fails", async () => {
+    globalThis.fetch = mock((input: string | URL | Request) => failingFetch(String(input))) as any;
+    const started = Date.now();
+    expect(await client().waitForPong("n1", 200)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 
   test("photo uploads follow the same retry rules", async () => {
