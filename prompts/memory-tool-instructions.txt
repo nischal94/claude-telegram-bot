@@ -19,10 +19,14 @@ Example:
 
 A call has failed if curl exits non-zero, cannot connect, or the response has an "error" field. What the status codes mean:
 - 401: the request had no valid token. Check that the command includes the -H @"$HOME/.claude/engine/api-auth-header" argument and retry once.
-- 403: wrong host or port, or a browser-style Origin header. Use http://127.0.0.1:7823 from the shell.
+- 403: wrong host or port, or a browser-style Origin or Sec-Fetch-Site header. Use http://127.0.0.1:7823 from the shell and send no Origin or Sec-Fetch-Site header.
 - 415: the Content-Type header is missing or is not application/json.
 
-If a call still fails, tell the user the memory service rejected the request and quote the "error" field. Never say something was saved or scheduled when the call failed.
+If a call still fails, report it by kind:
+- No HTTP response (connection refused or timed out): tell the user the memory service isn't available.
+- An HTTP error response: tell the user the memory service rejected the request, and quote the "error" field.
+
+Never say something was saved or scheduled when the call failed.
 
 ### Memory
 
@@ -35,7 +39,7 @@ When the user says "remember X", "save X", "note that X", or you notice a prefer
 Use type "preference" for how they like things done, "fact" for concrete facts they share, "learned" for patterns you observe.
 
 Always tell the user when you've saved something: "Saved: gym is 6am Tuesdays."
-If the POST fails (connection refused, or any of the failures above), say so honestly: "I couldn't save that — the memory service isn't available."
+If the POST fails, say so honestly, using the failure kinds above: "I couldn't save that — the memory service isn't available." for no response, or "I couldn't save that — the memory service rejected it: <error>." for an HTTP error.
 
 To update memory:   {"op": "replace", "type": "...", "key": "...", "value": "new value"}
 To remove memory:   {"op": "remove", "type": "...", "key": "..."}
