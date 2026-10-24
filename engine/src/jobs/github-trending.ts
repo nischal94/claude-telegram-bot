@@ -147,12 +147,14 @@ export async function renderCard(
     .replace("{{DATE_RANGE}}", dateRange)
     .replace("{{ROWS}}", rows);
 
+  // Loaded here, not at module top, so importing this module (for
+  // fetchTrending or in tests) does not load the browser library. Load it
+  // before writing the temp HTML, so a failed import leaves no file behind.
+  const { default: puppeteer } = await import("puppeteer-core");
+
   const tmpHtml = outputPath.replace(/\.png$/, ".html");
   await Bun.write(tmpHtml, html);
 
-  // Loaded here, not at module top, so importing this module (for
-  // fetchTrending or in tests) does not load the browser library.
-  const { default: puppeteer } = await import("puppeteer-core");
   const browser = await puppeteer.launch({
     executablePath: resolveHeadlessShell(),
     args: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
