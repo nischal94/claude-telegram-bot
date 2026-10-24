@@ -8,6 +8,7 @@ export interface Config {
   companionDir: string;
   logsDir: string;
   projectDir: string;
+  claudePath: string;
   httpPort: number;
 }
 
@@ -53,6 +54,8 @@ export function loadConfig(): Config {
     companionDir: join(home, ".claude", "engine"),
     logsDir: join(home, ".claude", "logs"),
     projectDir: join(home, "projects", "claude-telegram-bot"),
+    // Absolute path, so agent jobs never depend on PATH order under launchd.
+    claudePath: process.env.CLAUDE_BIN ?? join(home, ".local", "bin", "claude"),
     httpPort: parseInt(process.env.COMPANION_TEST_PORT ?? "7823", 10),
   };
 }
