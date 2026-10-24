@@ -198,6 +198,18 @@ describe("CronScheduler ties each run to one instance of a job", () => {
     }
   });
 
+  test("attempt counts of deleted jobs are dropped at the next run", async () => {
+    addReminder("gone");
+    addReminder("r");
+    scheduler.runNow("gone");
+    await scheduler.idle();
+    registry.remove("gone");
+    scheduler.runNow("r");
+    await scheduler.idle();
+    const keys = [...(scheduler as unknown as { attempts: Map<string, number> }).attempts.keys()];
+    expect(keys).toEqual([`r@${registry.get("r")!.created}`]);
+  });
+
   test("after stop, sync no longer creates timers", () => {
     addReminder("r");
     scheduler.start();

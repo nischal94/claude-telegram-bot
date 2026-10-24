@@ -148,6 +148,16 @@ export class CronScheduler {
     return this.executionQueue;
   }
 
+  // Drops attempt counts for job instances that no longer exist. A pending
+  // delivery retry for such an instance then records nothing, which is
+  // right: the job it belonged to is gone.
+  private pruneAttempts(): void {
+    for (const key of this.attempts.keys()) {
+      const at = key.lastIndexOf("@");
+      if (this.registry.get(key.slice(0, at))?.created !== key.slice(at + 1)) this.attempts.delete(key);
+    }
+  }
+
   // The job as stored now, if it is still the one the run was queued for.
   private current(target: RunTarget): CronJob | undefined {
     const job = this.registry.get(target.id);
@@ -196,6 +206,7 @@ export class CronScheduler {
       return;
     }
     console.log(`[scheduler] running job ${target.id}`);
+    this.pruneAttempts();
     const key = instanceKey(target);
     const attempt = (this.attempts.get(key) ?? 0) + 1;
     this.attempts.set(key, attempt);
