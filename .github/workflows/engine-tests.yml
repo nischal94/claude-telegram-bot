@@ -22,6 +22,9 @@ jobs:
   test:
     name: engine-tests
     runs-on: ubuntu-latest
+    # The suite runs in about a second; a hang should fail fast instead of
+    # running to GitHub's 6-hour default.
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: engine
