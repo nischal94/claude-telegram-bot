@@ -262,6 +262,11 @@ describe("served over a real socket", () => {
   async function rawRequest(port: number, host: string): Promise<string> {
     const chunks: string[] = [];
     await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`rawRequest timed out. Context: host=${host}`)), 5000);
+      const done = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
       Bun.connect({
         hostname: "127.0.0.1",
         port,
@@ -275,7 +280,7 @@ describe("served over a real socket", () => {
             chunks.push(data.toString());
           },
           close() {
-            resolve();
+            done();
           },
           error(_socket, error) {
             reject(error);

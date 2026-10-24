@@ -48,7 +48,9 @@ export function publishApiToken(dir: string, token: string): void {
   writeOwnerOnly(join(dir, "api-auth-header"), `Authorization: Bearer ${token}\n`);
 }
 
-// Logs the reason and a non-secret detail; never logs header values.
+// Logs the reason and a non-secret detail. The detail may quote the Host or
+// Sec-Fetch-Site value, JSON-escaped; it never includes the Authorization
+// header or the token.
 function reject(status: number, error: string, method: string, path: string, detail: string): Response {
   console.warn(`[engine] Request rejected: ${error}. Context: ${method} ${path} status=${status} ${detail}`);
   return Response.json({ error }, { status });
