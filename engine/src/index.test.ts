@@ -6,20 +6,19 @@ process.env.TELEGRAM_BOT_TOKEN = "test-token";
 process.env.TELEGRAM_CHAT_ID = "123456";
 process.env.ANTHROPIC_API_KEY = "test-key";
 
-import { buildFetchHandler } from "./index";
+import { buildFetchHandler, ensureApiToken, serveOptions } from "./index";
 import { MemoryStore } from "./memory/store";
 import { CronRegistry } from "./cron/registry";
 import { CronScheduler } from "./cron/scheduler";
 import { createMemoryRouter } from "./memory/handler";
 import { createCronRouter } from "./cron/handler";
 import { TelegramClient } from "./telegram";
-import { mkdirSync } from "fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
+import { tmpdir } from "os";
 
-// Set up isolated test fixtures
-const testDir = join(homedir(), ".claude", "engine-test");
-mkdirSync(testDir, { recursive: true });
+// Set up isolated test fixtures in a fresh directory, so runs never share state
+const testDir = mkdtempSync(join(tmpdir(), "engine-test-"));
 
 const store = new MemoryStore(join(testDir, "test-memory.db"));
 const registry = new CronRegistry(join(testDir, "test-cron-jobs.json"));
@@ -27,26 +26,44 @@ const telegram = new TelegramClient("test-token", "123456");
 const scheduler = new CronScheduler(registry, telegram, "test-key");
 const snapshotPath = join(testDir, "test-snapshot.md");
 
+const API_TOKEN = "a".repeat(64);
+const PORT = 7824;
+
 const memoryRouter = createMemoryRouter(store, snapshotPath);
 const cronRouter = createCronRouter(registry, scheduler);
-const handler = buildFetchHandler(memoryRouter, cronRouter);
+const handler = buildFetchHandler(memoryRouter, cronRouter, { token: API_TOKEN, port: PORT });
 
-// Helper to make mock requests
-function makeRequest(method: string, path: string, body?: unknown): Request {
-  const url = `http://localhost:7824${path}`;
-  if (body !== undefined) {
-    return new Request(url, {
-      method,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  }
-  return new Request(url, { method });
+interface RequestOptions {
+  body?: string;
+  headers?: Record<string, string>;
+  host?: string;
+  token?: string | null;
+}
+
+// Helper to make mock requests; sends the API token unless token is null
+function makeRequest(method: string, path: string, opts: RequestOptions = {}): Request {
+  const headers: Record<string, string> = { ...opts.headers };
+  const token = opts.token === undefined ? API_TOKEN : opts.token;
+  if (token !== null) headers["Authorization"] = `Bearer ${token}`;
+  return new Request(`http://${opts.host ?? `127.0.0.1:${PORT}`}${path}`, {
+    method,
+    headers,
+    body: opts.body,
+  });
+}
+
+function jsonRequest(method: string, path: string, body: unknown, opts: RequestOptions = {}): Request {
+  return makeRequest(method, path, {
+    ...opts,
+    body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json", ...opts.headers },
+  });
 }
 
 afterAll(() => {
   store.close();
   registry.close();
+  rmSync(testDir, { recursive: true, force: true });
 });
 
 describe("engine HTTP server", () => {
@@ -76,5 +93,134 @@ describe("engine HTTP server", () => {
   test("unknown route returns 404", async () => {
     const res = await handler(makeRequest("GET", "/unknown"));
     expect(res.status).toBe(404);
+  });
+});
+
+describe("engine HTTP request checks", () => {
+  test("GET /health needs no token", async () => {
+    const res = await handler(makeRequest("GET", "/health", { token: null }));
+    expect(res.status).toBe(200);
+  });
+
+  test("request without a token is rejected with 401", async () => {
+    const res = await handler(makeRequest("GET", "/memory", { token: null }));
+    expect(res.status).toBe(401);
+  });
+
+  test("request with a wrong token is rejected with 401", async () => {
+    const res = await handler(makeRequest("GET", "/cron", { token: "b".repeat(64) }));
+    expect(res.status).toBe(401);
+  });
+
+  test("request with a token of the wrong length is rejected with 401", async () => {
+    const res = await handler(makeRequest("GET", "/cron", { token: "a" }));
+    expect(res.status).toBe(401);
+  });
+
+  test("request for a foreign Host is rejected with 403, even with the token", async () => {
+    const res = await handler(makeRequest("GET", "/memory", { host: `attacker.test:${PORT}` }));
+    expect(res.status).toBe(403);
+  });
+
+  test("request for the right host on another port is rejected with 403", async () => {
+    const res = await handler(makeRequest("GET", "/memory", { host: "127.0.0.1:9999" }));
+    expect(res.status).toBe(403);
+  });
+
+  test("request with localhost as Host is accepted", async () => {
+    const res = await handler(makeRequest("GET", "/memory", { host: `localhost:${PORT}` }));
+    expect(res.status).toBe(200);
+  });
+
+  test("request with an Origin header is rejected with 403, even with the token", async () => {
+    const res = await handler(makeRequest("GET", "/memory", { headers: { Origin: "https://attacker.test" } }));
+    expect(res.status).toBe(403);
+  });
+
+  test("request with a cross-site Sec-Fetch-Site is rejected with 403", async () => {
+    const res = await handler(makeRequest("GET", "/memory", { headers: { "Sec-Fetch-Site": "cross-site" } }));
+    expect(res.status).toBe(403);
+  });
+
+  test("request with Sec-Fetch-Site none is accepted", async () => {
+    const res = await handler(makeRequest("GET", "/memory", { headers: { "Sec-Fetch-Site": "none" } }));
+    expect(res.status).toBe(200);
+  });
+
+  test("text/plain POST /cron is rejected with 415 and creates no job", async () => {
+    const body = JSON.stringify({ id: "ct-probe", schedule: "0 0 1 1 *", type: "reminder", message: "x" });
+    const res = await handler(makeRequest("POST", "/cron", { body, headers: { "Content-Type": "text/plain;charset=UTF-8" } }));
+    expect(res.status).toBe(415);
+    expect(registry.get("ct-probe")).toBeUndefined();
+  });
+
+  test("text/plain POST /memory is rejected with 415", async () => {
+    const body = JSON.stringify({ op: "add", type: "fact", key: "ct-probe", value: "x" });
+    const res = await handler(makeRequest("POST", "/memory", { body, headers: { "Content-Type": "text/plain" } }));
+    expect(res.status).toBe(415);
+  });
+
+  test("PATCH /cron/:id without a JSON content type is rejected with 415", async () => {
+    const res = await handler(makeRequest("PATCH", "/cron/any", { body: "{\"enabled\":false}" }));
+    expect(res.status).toBe(415);
+  });
+
+  test("POST /cron with the token and JSON content type creates the job", async () => {
+    const res = await handler(jsonRequest("POST", "/cron", { id: "auth-ok", schedule: "0 0 1 1 *", type: "reminder", message: "x" }));
+    expect(res.status).toBe(200);
+    expect(registry.get("auth-ok")).toBeDefined();
+    registry.remove("auth-ok");
+  });
+
+  test("JSON content type with a charset parameter is accepted", async () => {
+    const res = await handler(jsonRequest("POST", "/cron", { id: "auth-charset", schedule: "0 0 1 1 *", type: "reminder", message: "x" }, {
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+    }));
+    expect(res.status).toBe(200);
+    registry.remove("auth-charset");
+  });
+});
+
+describe("serveOptions", () => {
+  test("binds the HTTP server to IPv4 loopback only", () => {
+    const opts = serveOptions({ httpPort: 7823 });
+    expect(opts).toEqual({ hostname: "127.0.0.1", port: 7823 });
+  });
+});
+
+describe("ensureApiToken", () => {
+  test("writes a 64-character hex token readable only by the owner", () => {
+    const dir = mkdtempSync(join(tmpdir(), "engine-token-"));
+    try {
+      const token = ensureApiToken(dir);
+      const path = join(dir, "api-token");
+      expect(token).toMatch(/^[0-9a-f]{64}$/);
+      expect(readFileSync(path, "utf-8").trim()).toBe(token);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("writes a new token on every call", () => {
+    const dir = mkdtempSync(join(tmpdir(), "engine-token-"));
+    try {
+      expect(ensureApiToken(dir)).not.toBe(ensureApiToken(dir));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("tightens the mode of an existing token file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "engine-token-"));
+    try {
+      const path = join(dir, "api-token");
+      writeFileSync(path, "old");
+      chmodSync(path, 0o644);
+      ensureApiToken(dir);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
