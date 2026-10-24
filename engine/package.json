@@ -7,7 +7,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "node-cron": "^3.0.3",
+    "node-cron": "^4.6.0",
     "node-html-parser": "^7.1.0",
     "puppeteer-core": "25.13.0"
   },
