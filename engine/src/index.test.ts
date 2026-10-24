@@ -23,7 +23,12 @@ const testDir = mkdtempSync(join(tmpdir(), "engine-test-"));
 const store = new MemoryStore(join(testDir, "test-memory.db"));
 const registry = new CronRegistry(join(testDir, "test-cron-jobs.json"));
 const telegram = new TelegramClient("test-token", "123456");
-const scheduler = new CronScheduler(registry, telegram, "test-key");
+const scheduler = new CronScheduler(registry, telegram, {
+  apiKey: "test-key",
+  claudePath: "/nonexistent/claude",
+  agentCwd: testDir,
+  execute: async () => null,
+});
 const snapshotPath = join(testDir, "test-snapshot.md");
 
 const API_TOKEN = "a".repeat(64);

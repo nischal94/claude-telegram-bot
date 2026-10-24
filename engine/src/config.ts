@@ -1,5 +1,5 @@
 import { homedir } from "os";
-import { join } from "path";
+import { isAbsolute, join } from "path";
 
 export interface Config {
   telegramBotToken: string;
@@ -8,6 +8,7 @@ export interface Config {
   companionDir: string;
   logsDir: string;
   projectDir: string;
+  claudePath: string;
   httpPort: number;
 }
 
@@ -46,6 +47,13 @@ export function loadConfig(): Config {
     process.exit(1);
   }
 
+  // Must be absolute, so agent jobs never depend on PATH order under launchd.
+  const claudePath = process.env.CLAUDE_BIN ?? join(home, ".local", "bin", "claude");
+  if (!isAbsolute(claudePath)) {
+    console.error(`[engine] Invalid CLAUDE_BIN: must be an absolute path. Context: CLAUDE_BIN=${JSON.stringify(claudePath)}`);
+    process.exit(1);
+  }
+
   return {
     telegramBotToken: telegramBotToken!,
     telegramChatId: telegramChatId!,
@@ -53,6 +61,7 @@ export function loadConfig(): Config {
     companionDir: join(home, ".claude", "engine"),
     logsDir: join(home, ".claude", "logs"),
     projectDir: join(home, "projects", "claude-telegram-bot"),
+    claudePath,
     httpPort: parseInt(process.env.COMPANION_TEST_PORT ?? "7823", 10),
   };
 }

@@ -1,7 +1,8 @@
 import { randomBytes, timingSafeEqual } from "crypto";
-import { mkdirSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { loadConfig, type Config } from "./config";
+import { writeOwnerOnly } from "./fsutil";
 import { MemoryStore } from "./memory/store";
 import { writeSnapshot } from "./memory/snapshot";
 import { createMemoryRouter } from "./memory/handler";
@@ -23,21 +24,6 @@ export function serveOptions(config: Pick<Config, "httpPort">): { hostname: stri
 
 export function generateApiToken(): string {
   return randomBytes(32).toString("hex");
-}
-
-// Writes through a uniquely named temp file created exclusively with mode
-// 0600, then renames it into place, so readers never see a partial token or
-// a wider mode and concurrent writers never share a temp file. A failed
-// write or rename removes the temp file before rethrowing.
-function writeOwnerOnly(path: string, contents: string): void {
-  const tmpPath = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  try {
-    writeFileSync(tmpPath, contents, { mode: 0o600, flag: "wx" });
-    renameSync(tmpPath, path);
-  } catch (e) {
-    rmSync(tmpPath, { force: true });
-    throw e;
-  }
 }
 
 // Publishes the token as a ready-made header line for `curl -H @file`, which
@@ -161,14 +147,34 @@ export function startCompanion() {
   const snapshotPath = join(config.companionDir, "memory-snapshot.md");
   writeSnapshot(snapshotPath, store.getAll());
 
-  // Cron — registry remains for dynamic reminder/agent/shell jobs created
-  // at runtime via the HTTP API. The github-trending jobs were migrated to
-  // native launchd agents (launchd/com.nischal.github-trending-{weekly,
-  // monthly}.plist) to remove dependence on the long-running engine for
-  // scheduled digests.
-  const registry = new CronRegistry(join(config.companionDir, "cron-jobs.json"));
+  // Cron — registry for reminder and agent jobs created at runtime via the
+  // HTTP API, plus shell jobs added to cron-jobs.json by hand. The
+  // github-trending jobs were migrated to native launchd agents
+  // (launchd/com.nischal.github-trending-{weekly,monthly}.plist) to remove
+  // dependence on the long-running engine for scheduled digests.
   const telegram = new TelegramClient(config.telegramBotToken, config.telegramChatId);
-  const scheduler = new CronScheduler(registry, telegram, config.anthropicApiKey);
+  const registry = new CronRegistry(join(config.companionDir, "cron-jobs.json"), {
+    // While the file fails to load, job changes are refused and runs are not
+    // recorded, so tell the owner rather than only logging it.
+    onLoadStateChange: (state, reason) => {
+      const text = state === "unreadable"
+        ? `⚠️ cron-jobs.json failed to load (${reason}). Job changes are refused until it is fixed; jobs keep their last good state.`
+        : "✅ cron-jobs.json loads again. Job changes are allowed.";
+      telegram.sendMessageWithRetry(text).catch((e: unknown) => {
+        console.error(`[engine] Failed to send registry notice: ${e instanceof Error ? e.message : String(e)}`);
+      });
+    },
+  });
+  // Agent jobs run in a dedicated owner-only folder outside the engine's
+  // checkout, so its project settings and files are out of reach; the
+  // --restricted flag (see cron/executor.ts) ignores settings files.
+  const agentCwd = join(config.companionDir, "agent-cwd");
+  mkdirSync(agentCwd, { recursive: true, mode: 0o700 });
+  const scheduler = new CronScheduler(registry, telegram, {
+    apiKey: config.anthropicApiKey,
+    claudePath: config.claudePath,
+    agentCwd,
+  });
   scheduler.start();
 
   // Watchdog — DISABLED: waitForPong polls getUpdates independently, which
