@@ -214,8 +214,14 @@ export async function deliverTextDigest(
 const MAX_DESCRIPTION_CHARS = 200;
 const MAX_ERROR_CHARS = 300;
 
+// Cuts without splitting a character that takes two UTF-16 code units: half
+// of one is invalid text that Telegram can reject.
 function clip(text: string, max: number): string {
-  return text.length <= max ? text : text.slice(0, max - 1) + "…";
+  if (text.length <= max) return text;
+  let end = max - 1;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end--;
+  return text.slice(0, end) + "…";
 }
 
 // The text fallback, as Telegram HTML. Every scraped field and the error

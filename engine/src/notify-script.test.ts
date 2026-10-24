@@ -85,4 +85,5 @@ test("notify.sh still sends the chat id and the message", () => {
   const args = readFileSync(join(dir, "curl-args"), "utf-8").split("\n");
   expect(args).toContain("chat_id=42");
   expect(args).toContain("text=hello world");
+  expect(args).toContain('link_preview_options={"is_disabled":true}');
 });

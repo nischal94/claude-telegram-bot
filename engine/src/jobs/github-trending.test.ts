@@ -86,6 +86,17 @@ test("the text digest cuts long descriptions so the HTML stays under Telegram's 
   expect(text).not.toMatch(/&[a-z]*…/);
 });
 
+test("cutting a description or the error never leaves half a character", () => {
+  const loneHighSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/;
+  // 101 emoji are 202 code units: the description cut falls mid-emoji.
+  const text = buildTextDigest(
+    [{ rank: 1, owner: "o", name: "n", description: "😀".repeat(101), starsGained: "1" }],
+    "weekly", "😀".repeat(151), NOW,
+  );
+  expect(text).toContain("…</i>");
+  expect(loneHighSurrogate.test(text)).toBe(false);
+});
+
 test("the text digest escapes the render error it reports", () => {
   const text = buildTextDigest([], "weekly", "no <shell> found & failed", NOW);
   expect(text).toContain("Reason: no &lt;shell&gt; found &amp; failed");

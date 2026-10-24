@@ -34,6 +34,7 @@ for i in $(seq 1 $MAX_ATTEMPTS); do
     if printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" | curl -s --fail --max-time 10 -X POST -K - \
         -d "chat_id=${TELEGRAM_CHAT_ID}" \
         --data-urlencode "text=${MSG}" \
+        --data-urlencode 'link_preview_options={"is_disabled":true}' \
         > /dev/null 2>&1; then
         SENT=1
         break
