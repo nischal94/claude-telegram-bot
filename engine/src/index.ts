@@ -1,6 +1,7 @@
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { randomBytes, timingSafeEqual } from "crypto";
+import { mkdirSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { loadConfig } from "./config";
+import { loadConfig, type Config } from "./config";
 import { MemoryStore } from "./memory/store";
 import { writeSnapshot } from "./memory/snapshot";
 import { createMemoryRouter } from "./memory/handler";
@@ -11,14 +12,108 @@ import { TelegramClient } from "./telegram";
 import { HeartbeatWatchdog } from "./watchdog/heartbeat";
 import { RecoveryManager } from "./watchdog/recovery";
 
+export interface FetchHandlerOptions {
+  token: string;
+  port: number;
+}
+
+export function serveOptions(config: Pick<Config, "httpPort">): { hostname: string; port: number } {
+  return { hostname: "127.0.0.1", port: config.httpPort };
+}
+
+export function generateApiToken(): string {
+  return randomBytes(32).toString("hex");
+}
+
+// Writes through a uniquely named temp file created exclusively with mode
+// 0600, then renames it into place, so readers never see a partial token or
+// a wider mode and concurrent writers never share a temp file. A failed
+// write or rename removes the temp file before rethrowing.
+function writeOwnerOnly(path: string, contents: string): void {
+  const tmpPath = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  try {
+    writeFileSync(tmpPath, contents, { mode: 0o600, flag: "wx" });
+    renameSync(tmpPath, path);
+  } catch (e) {
+    rmSync(tmpPath, { force: true });
+    throw e;
+  }
+}
+
+// Publishes the token as a ready-made header line for `curl -H @file`, which
+// keeps the token out of process arguments. Call this only after the server
+// has bound its port, so a launch that fails to bind never replaces a
+// running engine's token.
+export function publishApiToken(dir: string, token: string): void {
+  writeOwnerOnly(join(dir, "api-auth-header"), `Authorization: Bearer ${token}\n`);
+}
+
+// Logs the reason and a non-secret detail. The detail may quote the Host or
+// Sec-Fetch-Site value, JSON-escaped; it never includes the Authorization
+// header or the token.
+function reject(status: number, error: string, method: string, path: string, detail: string): Response {
+  console.warn(`[engine] Request rejected: ${error}. Context: ${method} ${path} status=${status} ${detail}`);
+  return Response.json({ error }, { status });
+}
+
+const BEARER_PREFIX = "Bearer ";
+
+function tokenMatches(authorization: string | null, token: string): boolean {
+  if (!authorization?.startsWith(BEARER_PREFIX)) return false;
+  const given = Buffer.from(authorization.slice(BEARER_PREFIX.length));
+  const expected = Buffer.from(token);
+  return given.length === expected.length && timingSafeEqual(given, expected);
+}
+
+function isJsonContentType(contentType: string | null): boolean {
+  return contentType?.split(";")[0].trim().toLowerCase() === "application/json";
+}
+
 export function buildFetchHandler(
   memoryRouter: ReturnType<typeof createMemoryRouter>,
-  cronRouter: ReturnType<typeof createCronRouter>
+  cronRouter: ReturnType<typeof createCronRouter>,
+  options: FetchHandlerOptions
 ): (req: Request) => Promise<Response> {
+  if (options.token.length === 0) {
+    throw new Error("[engine] buildFetchHandler failed: empty API token. Context: options.token");
+  }
+  const allowedHosts = new Set([`127.0.0.1:${options.port}`, `localhost:${options.port}`]);
+
   return async function fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
     const method = req.method;
+
+    // Reject anything that looks like a browser or a rebound DNS name. A Host
+    // other than 127.0.0.1 or localhost on this port can come from DNS
+    // rebinding. An Origin header, or any Sec-Fetch-Site value other than
+    // "none", means the request came from a web page.
+    if (!allowedHosts.has(url.host)) {
+      return reject(403, "host not allowed", method, path, `host=${JSON.stringify(url.host)}`);
+    }
+    if (req.headers.has("origin")) {
+      return reject(403, "browser origin not allowed", method, path, "origin=present");
+    }
+    const fetchSite = req.headers.get("sec-fetch-site");
+    if (fetchSite !== null && fetchSite !== "none") {
+      return reject(403, "browser origin not allowed", method, path, `sec-fetch-site=${JSON.stringify(fetchSite)}`);
+    }
+
+    // Health check needs no token and returns no data
+    if (path === "/health" && method === "GET") return Response.json({ ok: true });
+
+    const authorization = req.headers.get("authorization");
+    if (!tokenMatches(authorization, options.token)) {
+      return reject(401, "missing or invalid token", method, path, `auth=${authorization === null ? "absent" : "mismatch"}`);
+    }
+
+    const cronPatchMatch = path.match(/^\/cron\/([^/]+)$/);
+    const hasJsonBody =
+      (method === "POST" && (path === "/memory" || path === "/cron")) ||
+      (method === "PATCH" && cronPatchMatch !== null);
+    if (hasJsonBody && !isJsonContentType(req.headers.get("content-type"))) {
+      return reject(415, "Content-Type must be application/json", method, path, "content-type=not-json");
+    }
 
     // Memory routes
     if (path === "/memory" && method === "POST") return memoryRouter.handlePost(req);
@@ -28,14 +123,10 @@ export function buildFetchHandler(
     // Cron routes
     if (path === "/cron" && method === "POST") return cronRouter.handlePost(req);
     if (path === "/cron" && method === "GET") return cronRouter.handleGet();
-    const cronPatchMatch = path.match(/^\/cron\/([^/]+)$/);
     if (cronPatchMatch && method === "PATCH") return cronRouter.handlePatch(req, cronPatchMatch[1]);
     if (cronPatchMatch && method === "DELETE") return cronRouter.handleDelete(req, cronPatchMatch[1]);
     const cronRunMatch = path.match(/^\/cron\/([^/]+)\/run$/);
     if (cronRunMatch && method === "POST") return cronRouter.handleRun(req, cronRunMatch[1]);
-
-    // Health check
-    if (path === "/health" && method === "GET") return Response.json({ ok: true });
 
     return new Response("Not Found", { status: 404 });
   };
@@ -95,14 +186,27 @@ export function startCompanion() {
   // HTTP server
   const memoryRouter = createMemoryRouter(store, snapshotPath);
   const cronRouter = createCronRouter(registry, scheduler);
-  const fetchHandler = buildFetchHandler(memoryRouter, cronRouter);
+  const apiToken = generateApiToken();
+  const fetchHandler = buildFetchHandler(memoryRouter, cronRouter, { token: apiToken, port: config.httpPort });
 
+  const { hostname, port } = serveOptions(config);
   const server = Bun.serve({
-    port: config.httpPort,
+    hostname,
+    port,
     fetch: fetchHandler,
   });
+  try {
+    publishApiToken(config.companionDir, apiToken);
+  } catch (e) {
+    // Without the published token no caller can authenticate, so serving on
+    // would only look healthy. Exit and let launchd restart the engine.
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`[engine] Failed to publish API token: ${reason}. Context: dir=${config.companionDir}`);
+    server.stop(true);
+    process.exit(1);
+  }
 
-  console.log(`[engine] HTTP server listening on port ${config.httpPort}`);
+  console.log(`[engine] HTTP server listening on ${hostname}:${port}`);
 
   // Graceful shutdown
   process.on("SIGTERM", () => {
