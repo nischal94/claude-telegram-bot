@@ -1,5 +1,5 @@
 import cron from "node-cron";
-import type { CronRegistry, CronJob } from "./registry";
+import { RegistryConflictError, type CronRegistry, type CronJob, type JobPatch } from "./registry";
 import { executeJob, type ExecutorOptions } from "./executor";
 import type { TelegramClient } from "../telegram";
 
@@ -8,6 +8,17 @@ const DELIVERY_RETRY_DELAY_MS = 60_000;
 export interface SchedulerOptions extends ExecutorOptions {
   deliveryRetryDelayMs?: number;
   execute?: (job: CronJob, opts: ExecutorOptions) => Promise<string | null>;
+}
+
+// Identifies the job a run was queued for. A job deleted and recreated with
+// the same id gets a new `created` value, so a run queued for the old job
+// never runs or updates the new one. A scheduled run also carries the
+// schedule that fired it, and is dropped if the schedule changed since.
+interface RunTarget {
+  id: string;
+  created: string;
+  schedule?: string;
+  manual: boolean;
 }
 
 export class CronScheduler {
@@ -31,15 +42,21 @@ export class CronScheduler {
     cron.schedule("* * * * *", () => this.sync());
   }
 
-  // Queues a manual run. A manual run also runs a disabled job.
+  // Queues a manual run. A manual run also runs a disabled job. A job that
+  // is already queued or running is not queued again.
   runNow(jobId: string): void {
-    if (!this.registry.get(jobId)) throw new Error(`job not found: ${jobId}`);
-    void this.enqueue(jobId, true);
+    const job = this.registry.get(jobId);
+    if (!job) throw new Error(`job not found: ${jobId}`);
+    void this.enqueue({ id: jobId, created: job.created, manual: true });
   }
 
-  // Queues a scheduled run, which skips the job if it is now disabled or gone.
+  // Queues a scheduled run of the job as it is now. The run is skipped if,
+  // by the time it starts, the job is disabled, deleted, replaced, or has a
+  // different schedule.
   runScheduled(jobId: string): Promise<void> {
-    return this.enqueue(jobId, false);
+    const job = this.registry.get(jobId);
+    if (!job) return this.executionQueue;
+    return this.enqueue({ id: jobId, created: job.created, schedule: job.schedule, manual: false });
   }
 
   // Resolves once every queued run and pending delivery retry has finished.
@@ -68,28 +85,59 @@ export class CronScheduler {
         console.error(`[scheduler] invalid cron expression for job ${job.id}: ${job.schedule}`);
         continue;
       }
-      const id = job.id;
-      const task = cron.schedule(job.schedule, () => { void this.runScheduled(id); });
-      this.tasks.set(id, { task, schedule: job.schedule });
+      const target: RunTarget = { id: job.id, created: job.created, schedule: job.schedule, manual: false };
+      const task = cron.schedule(job.schedule, () => { void this.enqueue(target); });
+      this.tasks.set(job.id, { task, schedule: job.schedule });
     }
   }
 
   // Serialize job execution — one job at a time to avoid hammering Claude API
   private executionQueue: Promise<void> = Promise.resolve();
+  // Jobs that are queued or running. A job runs at most once at a time, so
+  // a run longer than its interval cannot build up a backlog.
+  private pending: Set<string> = new Set();
 
-  private enqueue(jobId: string, manual: boolean): Promise<void> {
-    this.executionQueue = this.executionQueue.then(() => this.doRun(jobId, manual));
+  private enqueue(target: RunTarget): Promise<void> {
+    if (this.pending.has(target.id)) {
+      console.log(`[scheduler] skipping job ${target.id}: already queued or running`);
+      return this.executionQueue;
+    }
+    this.pending.add(target.id);
+    this.executionQueue = this.executionQueue
+      .then(() => this.doRun(target))
+      .catch((e: unknown) => {
+        // doRun handles its own failures; this keeps one unexpected error
+        // from stopping every later run in the chain.
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[scheduler] Unexpected error in job run: ${msg}. Context: id=${target.id}`);
+      })
+      .finally(() => this.pending.delete(target.id));
     return this.executionQueue;
   }
 
-  // Records run state on the job. The job may have been deleted, or the
-  // registry may refuse saves after a bad load; neither should stop the run.
-  private record(jobId: string, patch: Partial<CronJob>): void {
-    try {
-      this.registry.update(jobId, patch);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error(`[scheduler] Failed to record run state: ${msg}. Context: id=${jobId}`);
+  // The job as stored now, if it is still the one the run was queued for.
+  private current(target: RunTarget): CronJob | undefined {
+    const job = this.registry.get(target.id);
+    return job && job.created === target.created ? job : undefined;
+  }
+
+  // Records run state on the job the run belongs to. The job may have been
+  // deleted or replaced, or the registry may refuse saves after a bad load;
+  // none of these should stop the run. A save refused because the file
+  // changed on disk is tried once more after the reload.
+  private record(target: RunTarget, patch: (job: CronJob) => JobPatch): void {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const job = this.current(target);
+      if (!job) return;
+      try {
+        this.registry.update(target.id, patch(job));
+        return;
+      } catch (e: unknown) {
+        if (e instanceof RegistryConflictError && attempt === 0) continue;
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[scheduler] Failed to record run state: ${msg}. Context: id=${target.id}`);
+        return;
+      }
     }
   }
 
@@ -102,48 +150,63 @@ export class CronScheduler {
     }
   }
 
-  // Always reads the job from the registry at run time, so edits, pauses and
-  // deletions made after the job was scheduled take effect.
-  private async doRun(jobId: string, manual: boolean): Promise<void> {
-    const job = this.registry.get(jobId);
-    if (!job || (!job.enabled && !manual)) {
-      console.log(`[scheduler] skipping job ${jobId}: ${job ? "disabled" : "deleted"}`);
+  // Always reads the job from the registry at run time, so pauses, deletions
+  // and message or prompt edits made after queueing apply to the run.
+  private async doRun(target: RunTarget): Promise<void> {
+    const job = this.current(target);
+    const skip = !job ? "deleted or replaced"
+      : !target.manual && !job.enabled ? "disabled"
+      : target.schedule !== undefined && job.schedule !== target.schedule ? "schedule changed"
+      : null;
+    if (!job || skip) {
+      console.log(`[scheduler] skipping job ${target.id}: ${skip}`);
       return;
     }
-    console.log(`[scheduler] running job ${jobId}`);
+    console.log(`[scheduler] running job ${target.id}`);
 
     let output: string | null;
     try {
       output = await this.execute(job, this.options);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.error(`[scheduler] job ${jobId} failed: ${msg}`);
-      this.record(jobId, { lastError: msg });
-      // No automatic re-run: an agent or shell job may already have acted.
-      await this.notify(`❌ Cron job "${jobId}" failed: ${msg}`);
+      console.error(`[scheduler] job ${target.id} failed: ${msg}`);
+      this.record(target, () => ({ lastError: msg }));
+      // Not retried: an agent or shell job may already have acted. The job
+      // runs again at its next scheduled time.
+      await this.notify(`❌ Cron job "${target.id}" failed: ${msg}`);
       return;
     }
 
-    this.record(jobId, {
-      lastRun: new Date().toISOString(),
-      runCount: (this.registry.get(jobId)?.runCount ?? job.runCount ?? 0) + 1,
+    const runStamp = new Date().toISOString();
+    this.record(target, (current) => ({
+      lastRun: runStamp,
+      runCount: current.runCount + 1,
       lastError: undefined,
-    });
+    }));
     if (output === null) return;
 
     const text = output || "(no output)";
     try {
       await this.telegram.sendMessageWithRetry(text);
-    } catch {
-      // Retry the delivery once later, outside the queue; never re-run the job.
+    } catch (e: unknown) {
+      const delayMs = this.options.deliveryRetryDelayMs ?? DELIVERY_RETRY_DELAY_MS;
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[scheduler] job ${target.id} delivery failed, sending again in ${delayMs / 1000}s: ${msg}`);
+      // Send again once later, outside the queue; never re-run the job.
       const retry = (async () => {
-        await Bun.sleep(this.options.deliveryRetryDelayMs ?? DELIVERY_RETRY_DELAY_MS);
+        await Bun.sleep(delayMs);
+        if (!this.current(target)) {
+          console.log(`[scheduler] dropping delivery retry for job ${target.id}: deleted or replaced`);
+          return;
+        }
         try {
           await this.telegram.sendMessageWithRetry(text);
         } catch (e2: unknown) {
-          const msg = e2 instanceof Error ? e2.message : String(e2);
-          console.error(`[scheduler] job ${jobId} delivery failed twice: ${msg}`);
-          this.record(jobId, { lastError: `delivery failed: ${msg}` });
+          const msg2 = e2 instanceof Error ? e2.message : String(e2);
+          console.error(`[scheduler] job ${target.id} delivery failed twice: ${msg2}`);
+          // Only this run's record: a newer run's status must stand.
+          const stillThisRun = this.current(target)?.lastRun === runStamp;
+          if (stillThisRun) this.record(target, () => ({ lastError: `delivery failed: ${msg2}` }));
         }
       })();
       this.pendingRetries.add(retry);

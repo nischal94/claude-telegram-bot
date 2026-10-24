@@ -3,8 +3,11 @@ import type { CronJob } from "./registry";
 
 const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const KILL_GRACE_MS = 5000;
+const DRAIN_MS = 2000;
 const MAX_OUTPUT = 3800;
-const MAX_CAPTURE = 1024 * 1024; // per stream; more output is dropped
+// Per stream, in characters. Capture stops after the chunk that reaches this
+// size, so the kept output can exceed it by one chunk.
+const MAX_CAPTURE = 1024 * 1024;
 
 // Agent jobs read untrusted web content, so by default they get only these
 // tools. A job can add more through its `tools` field, which only a hand
@@ -14,7 +17,7 @@ export const DEFAULT_AGENT_TOOLS = ["WebFetch", "WebSearch"];
 export interface ExecutorOptions {
   apiKey: string;
   claudePath: string; // absolute path to the claude CLI
-  agentCwd: string;   // empty, owner-only working directory for agent jobs
+  agentCwd: string;   // owner-only working directory for agent jobs
   timeoutMs?: number;
 }
 
@@ -30,13 +33,19 @@ export interface RunOptions {
   env?: NodeJS.ProcessEnv;
   timeoutMs: number;
   graceMs?: number;
+  drainMs?: number;
 }
 
-// Runs argv in its own process group without a shell. On timeout it sends
-// SIGTERM to the whole group, then SIGKILL after a grace period, so
-// grandchildren that hold the output pipes open cannot outlive the job.
+// Runs argv in its own process group without a shell, and always settles.
+//  - On timeout it sends SIGTERM to the group, then SIGKILL after a grace
+//    period, or as soon as the run settles if that comes first.
+//    Descendants that left the group (setsid) are not reached.
+//  - It settles when the output pipes close. If something still holds them
+//    open, it settles anyway: DRAIN_MS after the main process exits (and
+//    then kills what is left of the group), or DRAIN_MS after the SIGKILL.
 export function runProcess(argv: string[], opts: RunOptions): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
+    const drainMs = opts.drainMs ?? DRAIN_MS;
     const child = spawn(argv[0], argv.slice(1), {
       cwd: opts.cwd,
       env: opts.env,
@@ -46,33 +55,65 @@ export function runProcess(argv: string[], opts: RunOptions): Promise<ProcessRes
     let stdout = "";
     let stderr = "";
     let timedOut = false;
-    let graceTimer: ReturnType<typeof setTimeout> | undefined;
-    child.stdout.on("data", (d: Buffer) => { if (stdout.length < MAX_CAPTURE) stdout += d.toString(); });
-    child.stderr.on("data", (d: Buffer) => { if (stderr.length < MAX_CAPTURE) stderr += d.toString(); });
+    let exitCode: number | null = null;
+    let settled = false;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (d: string) => { if (stdout.length < MAX_CAPTURE) stdout += d; });
+    child.stderr.on("data", (d: string) => { if (stderr.length < MAX_CAPTURE) stderr += d; });
 
     const killGroup = (signal: NodeJS.Signals): void => {
       try {
         process.kill(-child.pid!, signal);
-      } catch {
-        // The group is already gone.
+      } catch (e) {
+        // ESRCH: the group is already gone. Anything else is worth a log.
+        if ((e as NodeJS.ErrnoException).code !== "ESRCH") {
+          console.error(`[executor] Failed to signal process group: ${(e as Error).message}. Context: pid=${child.pid} signal=${signal}`);
+        }
       }
     };
-    const timer = setTimeout(() => {
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      timers.forEach(clearTimeout);
+      // Once a timeout has started, end with SIGKILL even if the pipes
+      // closed first: a descendant can ignore SIGTERM after redirecting its
+      // output away from the pipes.
+      if (timedOut) killGroup("SIGKILL");
+      child.stdout.destroy();
+      child.stderr.destroy();
+      resolve({ exitCode, stdout, stderr, timedOut });
+    };
+
+    timers.push(setTimeout(() => {
       timedOut = true;
       killGroup("SIGTERM");
-      graceTimer = setTimeout(() => killGroup("SIGKILL"), opts.graceMs ?? KILL_GRACE_MS);
-    }, opts.timeoutMs);
+      timers.push(setTimeout(() => {
+        killGroup("SIGKILL");
+        timers.push(setTimeout(finish, drainMs));
+      }, opts.graceMs ?? KILL_GRACE_MS));
+    }, opts.timeoutMs));
 
     child.on("error", (e) => {
-      clearTimeout(timer);
-      clearTimeout(graceTimer);
+      if (settled) return;
+      settled = true;
+      timers.forEach(clearTimeout);
       reject(new Error(`[executor] Failed to start ${argv[0]}: ${e.message}`));
     });
-    child.on("close", (exitCode) => {
-      clearTimeout(timer);
-      clearTimeout(graceTimer);
-      resolve({ exitCode, stdout, stderr, timedOut });
+    child.on("exit", (code) => {
+      exitCode = code;
+      if (settled) return;
+      // Pipes still open after the leader exits mean descendants remain.
+      // Those still in the group are killed. If all of them left the group,
+      // its id is free and the kill normally finds nothing; only if the
+      // system reused that id within drainMs could it reach another group.
+      timers.push(setTimeout(() => {
+        killGroup("SIGKILL");
+        finish();
+      }, drainMs));
     });
+    child.on("close", finish);
   });
 }
 
@@ -94,7 +135,7 @@ export function agentArgv(job: CronJob, claudePath: string): string[] {
   ];
 }
 
-function failure(job: CronJob, what: string, result: ProcessResult, timeoutMs: number): Error {
+function failure(what: string, result: ProcessResult, timeoutMs: number): Error {
   if (result.timedOut) return new Error(`[executor] ${what} timed out after ${timeoutMs / 1000}s`);
   return new Error(`[executor] ${what} exited ${result.exitCode}: ${result.stderr.slice(0, 500)}`);
 }
@@ -108,7 +149,7 @@ export async function executeJob(job: CronJob, opts: ExecutorOptions): Promise<s
 
   if (job.type === "shell") {
     const result = await runProcess(job.command!, { env: { ...process.env }, timeoutMs });
-    if (result.timedOut || result.exitCode !== 0) throw failure(job, "shell job", result, timeoutMs);
+    if (result.timedOut || result.exitCode !== 0) throw failure("shell job", result, timeoutMs);
     return null;
   }
 
@@ -118,7 +159,7 @@ export async function executeJob(job: CronJob, opts: ExecutorOptions): Promise<s
       env: { ...process.env, ANTHROPIC_API_KEY: opts.apiKey },
       timeoutMs,
     });
-    if (result.timedOut || result.exitCode !== 0) throw failure(job, "claude", result, timeoutMs);
+    if (result.timedOut || result.exitCode !== 0) throw failure("claude", result, timeoutMs);
     return result.stdout.slice(0, MAX_OUTPUT);
   }
 

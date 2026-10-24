@@ -14,10 +14,14 @@ let executed: string[];
 let executeImpl: (job: CronJob) => Promise<string | null>;
 let scheduler: CronScheduler;
 
+let failWhen: ((text: string) => boolean) | null;
+let onFail: (() => void) | null;
+
 const telegram = {
   async sendMessageWithRetry(text: string): Promise<void> {
-    if (failSends > 0) {
-      failSends--;
+    if (failSends > 0 || failWhen?.(text)) {
+      if (failSends > 0) failSends--;
+      onFail?.();
       throw new Error("[telegram] sendMessage failed: 502");
     }
     sent.push(text);
@@ -29,6 +33,8 @@ beforeEach(() => {
   registry = new CronRegistry(join(tmpDir, "cron-jobs.json"));
   sent = [];
   failSends = 0;
+  failWhen = null;
+  onFail = null;
   executed = [];
   executeImpl = async (job) => (job.type === "reminder" ? job.message! : "agent output");
   scheduler = new CronScheduler(registry, telegram, {
@@ -89,10 +95,148 @@ describe("CronScheduler runs the job as stored now", () => {
 
   test("runCount counts every run from the stored value", async () => {
     addReminder("r");
-    for (let i = 0; i < 3; i++) scheduler.runNow("r");
-    await scheduler.idle();
+    for (let i = 0; i < 3; i++) {
+      scheduler.runNow("r");
+      await scheduler.idle();
+    }
     expect(registry.get("r")?.runCount).toBe(3);
     expect(registry.get("r")?.lastRun).not.toBeNull();
+  });
+
+  test("runCount adds to a value changed on disk since the job was loaded", async () => {
+    addReminder("r");
+    registry.update("r", { runCount: 41 });
+    scheduler.runNow("r");
+    await scheduler.idle();
+    expect(registry.get("r")?.runCount).toBe(42);
+  });
+
+  test("an edit made while the job waits in the queue applies to that run", async () => {
+    addReminder("slow", "first");
+    addReminder("r", "old text");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    executeImpl = async (job) => {
+      if (job.id === "slow") await gate;
+      return job.message!;
+    };
+    scheduler.runNow("slow");
+    scheduler.runNow("r");
+    registry.update("r", { message: "new text" });
+    release();
+    await scheduler.idle();
+    expect(sent).toEqual(["first", "new text"]);
+  });
+
+  test("a job already queued or running is not queued again", async () => {
+    addReminder("r");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    executeImpl = async (job) => {
+      await gate;
+      return job.message!;
+    };
+    scheduler.runNow("r");
+    scheduler.runNow("r");
+    void scheduler.runScheduled("r");
+    release();
+    await scheduler.idle();
+    expect(executed).toEqual(["r"]);
+  });
+});
+
+describe("CronScheduler ties each run to one instance of a job", () => {
+  function gated(): { release: () => void } {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    executeImpl = async (job) => {
+      if (job.id === "slow") await gate;
+      return job.message!;
+    };
+    return { release };
+  }
+
+  test("a run queued for a job that is then deleted and recreated is skipped", async () => {
+    addReminder("slow", "first");
+    addReminder("r", "old job");
+    const { release } = gated();
+    scheduler.runNow("slow");
+    scheduler.runNow("r");
+    registry.remove("r");
+    addReminder("r", "new job");
+    release();
+    await scheduler.idle();
+    expect(executed).toEqual(["slow"]);
+    expect(registry.get("r")?.runCount).toBe(0);
+  });
+
+  test("a scheduled run queued before a schedule change is dropped", async () => {
+    addReminder("slow", "first");
+    addReminder("r");
+    const { release } = gated();
+    scheduler.runNow("slow");
+    void scheduler.runScheduled("r");
+    registry.update("r", { schedule: "30 9 * * 1" });
+    release();
+    await scheduler.idle();
+    expect(executed).toEqual(["slow"]);
+  });
+
+  test("a delivery retry for a job deleted in the meantime is not sent", async () => {
+    addReminder("r", "deliver me");
+    failSends = 1;
+    onFail = () => { registry.remove("r"); };
+    scheduler.runNow("r");
+    await scheduler.idle();
+    expect(sent).toEqual([]);
+  });
+
+  test("a late failed retry does not overwrite a newer run's status", async () => {
+    scheduler = new CronScheduler(registry, telegram, {
+      apiKey: "test-key",
+      claudePath: "/unused",
+      agentCwd: tmpDir,
+      deliveryRetryDelayMs: 100,
+      execute: async (job) => job.message!,
+    });
+    addReminder("r", "first run");
+    failWhen = (text) => text === "first run";
+    scheduler.runNow("r");
+    await Bun.sleep(20);
+    registry.update("r", { message: "second run" });
+    scheduler.runNow("r");
+    await scheduler.idle();
+    expect(sent).toEqual(["second run"]);
+    expect(registry.get("r")?.runCount).toBe(2);
+    expect(registry.get("r")?.lastError).toBeUndefined();
+  });
+});
+
+describe("CronScheduler keeps running after errors", () => {
+  test("a run whose state cannot be saved does not stop later runs", async () => {
+    addReminder("a", "one");
+    addReminder("b", "two");
+    // Make the registry refuse saves: corrupt the file and reload.
+    const { writeFileSync } = await import("fs");
+    writeFileSync(join(tmpDir, "cron-jobs.json"), "not json");
+    registry.reload();
+    scheduler.runNow("a");
+    scheduler.runNow("b");
+    await scheduler.idle();
+    expect(sent).toEqual(["one", "two"]);
+  });
+
+  test("a run for a job deleted mid-run does not stop later runs", async () => {
+    addReminder("a", "one");
+    addReminder("b", "two");
+    executeImpl = async (job) => {
+      if (job.id === "a") registry.remove("a");
+      return job.message!;
+    };
+    scheduler.runNow("a");
+    scheduler.runNow("b");
+    await scheduler.idle();
+    expect(sent).toEqual(["one", "two"]);
   });
 });
 

@@ -56,15 +56,18 @@ When the user asks to schedule a reminder or recurring task:
     "schedule": "0 9 * * 1",   <- standard cron expression
     "type": "reminder",         <- or "agent"
     "message": "...",           <- for reminder
-    "prompt": "...",            <- for agent (claude will execute this)
+    "prompt": "...",            <- for agent (see below)
     "delivery": "telegram"
   }
+
+The id may use letters, digits, ".", "_" and "-" (up to 64 characters). An agent job is a separate Claude run that can only search the web and fetch web pages. It cannot read or write files, run commands, or use this memory API, so only schedule agent jobs for web research or summaries. Shell jobs cannot be created through the API; if the user needs one, tell them to add it to ~/.claude/engine/cron-jobs.json by hand.
 
 Confirm to the user after creating: "Set: remind you every Monday at 9am."
 To list jobs:   GET http://127.0.0.1:7823/cron
 To pause:       PATCH http://127.0.0.1:7823/cron/{id}  {"enabled": false}   (with Content-Type: application/json)
 To delete:      DELETE http://127.0.0.1:7823/cron/{id}
-To run now:     POST http://127.0.0.1:7823/cron/{id}/run
+To run now:     POST http://127.0.0.1:7823/cron/{id}/run   (queues the job; the result arrives on Telegram)
+A 503 response means ~/.claude/engine/cron-jobs.json failed to load: tell the user, and do not retry.
 
 ### Heartbeat (CRITICAL — read carefully)
 

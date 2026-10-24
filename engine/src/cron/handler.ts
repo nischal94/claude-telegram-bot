@@ -1,8 +1,7 @@
 import cron from "node-cron";
-import type { CronRegistry, CreateJobInput, CronJob } from "./registry";
+import { isValidJobId, RegistryConflictError, type CronRegistry, type CreateJobInput, type CronJob, type JobPatch } from "./registry";
 import type { CronScheduler } from "./scheduler";
 
-const ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 const PATCHABLE_FIELDS = new Set(["enabled", "schedule", "message", "prompt"]);
 
 type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -15,14 +14,16 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-// Builds a job only from the fields the API accepts. Shell jobs and agent
-// tools run with the owner's full authority, so they can only be added to
-// cron-jobs.json by hand.
+// Builds a job only from the fields the API accepts. Shell jobs and extra
+// agent tools run with the owner's full authority, so the API cannot create
+// them: they can only be added to cron-jobs.json by hand. The API can still
+// run such a job, and pause it or change its schedule; it cannot change the
+// prompt of an agent job that has extra tools (see validatePatch).
 function validateNewJob(body: unknown): Validation<CreateJobInput> {
   if (!isPlainObject(body)) return { ok: false, error: "body must be a JSON object" };
   const { id, schedule, type, message, prompt } = body;
-  if (typeof id !== "string" || !ID_PATTERN.test(id)) {
-    return { ok: false, error: "id must be 1-64 letters, digits, '.', '_' or '-'" };
+  if (!isValidJobId(id)) {
+    return { ok: false, error: "id must be 1-64 letters, digits, '.', '_' or '-', and not only dots" };
   }
   if (typeof schedule !== "string" || !cron.validate(schedule)) {
     return { ok: false, error: "schedule must be a valid cron expression" };
@@ -41,13 +42,13 @@ function validateNewJob(body: unknown): Validation<CreateJobInput> {
   return { ok: false, error: "type must be reminder or agent" };
 }
 
-function validatePatch(job: CronJob, body: unknown): Validation<Partial<CronJob>> {
+function validatePatch(job: CronJob, body: unknown): Validation<JobPatch> {
   if (!isPlainObject(body)) return { ok: false, error: "body must be a JSON object" };
   const unknownFields = Object.keys(body).filter((k) => !PATCHABLE_FIELDS.has(k));
   if (unknownFields.length > 0) {
     return { ok: false, error: `only enabled, schedule, message and prompt can be changed; got ${unknownFields.join(", ")}` };
   }
-  const patch: Partial<CronJob> = {};
+  const patch: JobPatch = {};
   if ("enabled" in body) {
     if (typeof body.enabled !== "boolean") return { ok: false, error: "enabled must be true or false" };
     patch.enabled = body.enabled;
@@ -65,17 +66,29 @@ function validatePatch(job: CronJob, body: unknown): Validation<Partial<CronJob>
   }
   if ("prompt" in body) {
     if (job.type !== "agent") return { ok: false, error: "prompt applies to agent jobs only" };
+    // The extra tools were granted by hand for a prompt the owner wrote;
+    // the API must not choose what those tools do.
+    if (job.tools && job.tools.length > 0) {
+      return { ok: false, error: "this job has extra tools; change its prompt in cron-jobs.json by hand" };
+    }
     if (!isNonEmptyString(body.prompt)) return { ok: false, error: "prompt must be a non-empty string" };
     patch.prompt = body.prompt;
   }
   return { ok: true, value: patch };
 }
 
-// Logs the real failure and returns a generic 500, so file paths and other
-// internal detail never reach the API caller.
-function internalError(operation: string, id: string, e: unknown): Response {
+// Logs the real failure and returns a generic error, so file paths and other
+// internal detail never reach the API caller. When the jobs file failed to
+// load, saves are refused and the caller gets a 503 that says so.
+function internalError(registry: CronRegistry, operation: string, id: string, e: unknown): Response {
   const reason = e instanceof Error ? e.message : String(e);
   console.error(`[cron] ${operation} failed: ${reason}. Context: id=${id}`);
+  if (e instanceof RegistryConflictError && registry.isWritable()) {
+    return Response.json({ error: "cron-jobs.json changed on disk; read the jobs again and retry" }, { status: 409 });
+  }
+  if (!registry.isWritable()) {
+    return Response.json({ error: "cron-jobs.json failed to load; fix the file before changing jobs" }, { status: 503 });
+  }
   return Response.json({ error: `could not ${operation}` }, { status: 500 });
 }
 
@@ -98,7 +111,7 @@ export function createCronRouter(registry: CronRegistry, scheduler: CronSchedule
         const id = registry.create(input.value);
         return Response.json({ ok: true, id });
       } catch (e: unknown) {
-        return internalError("save the job", input.value.id, e);
+        return internalError(registry, "save the job", input.value.id, e);
       }
     },
 
@@ -107,17 +120,19 @@ export function createCronRouter(registry: CronRegistry, scheduler: CronSchedule
     },
 
     async handlePatch(req: Request, id: string): Promise<Response> {
-      const job = registry.get(id);
-      if (!job) return Response.json({ error: "job not found" }, { status: 404 });
       const body = await readJson(req);
       if (!body.ok) return Response.json({ error: body.error }, { status: 400 });
+      // Read the job after the body, so a delete while the body was read
+      // gives a 404, not a 500.
+      const job = registry.get(id);
+      if (!job) return Response.json({ error: "job not found" }, { status: 404 });
       const patch = validatePatch(job, body.value);
       if (!patch.ok) return Response.json({ error: patch.error }, { status: 400 });
       try {
         registry.update(id, patch.value);
         return Response.json({ ok: true });
       } catch (e: unknown) {
-        return internalError("update the job", id, e);
+        return internalError(registry, "update the job", id, e);
       }
     },
 
@@ -126,19 +141,19 @@ export function createCronRouter(registry: CronRegistry, scheduler: CronSchedule
         if (!registry.remove(id)) return Response.json({ error: "job not found" }, { status: 404 });
         return Response.json({ ok: true });
       } catch (e: unknown) {
-        return internalError("delete the job", id, e);
+        return internalError(registry, "delete the job", id, e);
       }
     },
 
-    // Queues the job and returns at once; the run's result is reported
-    // through Telegram and the job's lastRun / lastError fields.
+    // Queues the job and returns at once. Failures are reported through
+    // Telegram and the job's lastError field; lastRun shows a completed run.
     async handleRun(_req: Request, id: string): Promise<Response> {
       if (!registry.get(id)) return Response.json({ error: "job not found" }, { status: 404 });
       try {
         scheduler.runNow(id);
         return Response.json({ ok: true, queued: true });
       } catch (e: unknown) {
-        return internalError("queue the job", id, e);
+        return internalError(registry, "queue the job", id, e);
       }
     },
   };

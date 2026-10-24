@@ -152,10 +152,22 @@ export function startCompanion() {
   // github-trending jobs were migrated to native launchd agents
   // (launchd/com.nischal.github-trending-{weekly,monthly}.plist) to remove
   // dependence on the long-running engine for scheduled digests.
-  const registry = new CronRegistry(join(config.companionDir, "cron-jobs.json"));
   const telegram = new TelegramClient(config.telegramBotToken, config.telegramChatId);
-  // Agent jobs run in an empty owner-only directory, so they pick up no
-  // project settings, plugins or files from the engine's checkout.
+  const registry = new CronRegistry(join(config.companionDir, "cron-jobs.json"), {
+    // While the file fails to load, job changes are refused and runs are not
+    // recorded, so tell the owner rather than only logging it.
+    onLoadStateChange: (state, reason) => {
+      const text = state === "unreadable"
+        ? `⚠️ cron-jobs.json failed to load (${reason}). Job changes are refused until it is fixed; jobs keep their last good state.`
+        : "✅ cron-jobs.json loads again. Job changes are allowed.";
+      telegram.sendMessageWithRetry(text).catch((e: unknown) => {
+        console.error(`[engine] Failed to send registry notice: ${e instanceof Error ? e.message : String(e)}`);
+      });
+    },
+  });
+  // Agent jobs run in a dedicated owner-only folder outside the engine's
+  // checkout, so its project settings and files are out of reach; the
+  // --restricted flag (see cron/executor.ts) ignores settings files.
   const agentCwd = join(config.companionDir, "agent-cwd");
   mkdirSync(agentCwd, { recursive: true, mode: 0o700 });
   const scheduler = new CronScheduler(registry, telegram, {

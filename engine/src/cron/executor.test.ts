@@ -29,12 +29,29 @@ beforeAll(() => {
   tmpDir = realpathSync(mkdtempSync(join(tmpdir(), "cron-executor-test-")));
   const agentCwd = join(tmpDir, "agent-cwd");
   mkdirSync(agentCwd, { mode: 0o700 });
-  // A stand-in for the claude CLI: prints its working directory and arguments.
+  // A stand-in for the claude CLI: prints its working directory, the API key
+  // it received, and its arguments.
   const fakeClaude = join(tmpDir, "fake-claude");
-  writeFileSync(fakeClaude, "#!/bin/sh\npwd\nfor a in \"$@\"; do echo \"ARG:$a\"; done\n");
+  writeFileSync(fakeClaude, "#!/bin/sh\npwd\necho \"KEY:$ANTHROPIC_API_KEY\"\nfor a in \"$@\"; do echo \"ARG:$a\"; done\n");
   chmodSync(fakeClaude, 0o755);
+  failingClaude = join(tmpDir, "failing-claude");
+  writeFileSync(failingClaude, "#!/bin/sh\necho partial\necho 'model overloaded' >&2\nexit 1\n");
+  chmodSync(failingClaude, 0o755);
   opts = { apiKey: "test-key", claudePath: fakeClaude, agentCwd };
 });
+
+let failingClaude: string;
+
+// Polls instead of checking once: a killed process can take a moment to be
+// reaped, especially on a loaded CI runner.
+async function waitUntilDead(pid: number, ms = 3000): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (!isAlive(pid)) return true;
+    await Bun.sleep(25);
+  }
+  return !isAlive(pid);
+}
 
 afterAll(() => {
   rmSync(tmpDir, { recursive: true, force: true });
@@ -78,12 +95,18 @@ describe("executeJob", () => {
     expect(await executeJob(job({ type: "reminder", message: "Standup" }), opts)).toBe("Standup");
   });
 
-  test("an agent job runs the claude CLI in the empty agent directory", async () => {
+  test("an agent job runs the claude CLI in the agent directory with the API key", async () => {
     const output = await executeJob(job({ type: "agent", prompt: "hello" }), opts);
     const lines = output!.trim().split("\n");
     expect(lines[0]).toBe(opts.agentCwd);
+    expect(lines[1]).toBe("KEY:test-key");
     expect(lines).toContain("ARG:--restricted");
     expect(lines.at(-1)).toBe("ARG:hello");
+  });
+
+  test("a failing agent run throws instead of delivering its partial output", async () => {
+    const failing = { ...opts, claudePath: failingClaude };
+    await expect(executeJob(job({ type: "agent", prompt: "x" }), failing)).rejects.toThrow(/claude exited 1: model overloaded/);
   });
 
   test("a shell job returns nothing to deliver", async () => {
@@ -109,13 +132,53 @@ describe("runProcess", () => {
 
   test("on timeout, kills the whole process group, including grandchildren", async () => {
     const result = await runProcess(
-      ["/bin/sh", "-c", "sleep 30 & echo $!; wait"],
-      { timeoutMs: 300, graceMs: 200 },
+      ["/bin/sh", "-c", "sleep 30 & echo \"PID:$!\"; wait"],
+      { timeoutMs: 1000, graceMs: 200, drainMs: 200 },
     );
     expect(result.timedOut).toBe(true);
-    const grandchild = parseInt(result.stdout.trim(), 10);
-    expect(grandchild).toBeGreaterThan(0);
-    expect(isAlive(grandchild)).toBe(false);
+    const match = result.stdout.match(/PID:(\d+)/);
+    expect(match).not.toBeNull();
+    expect(await waitUntilDead(parseInt(match![1], 10))).toBe(true);
+  });
+
+  test("a child that ignores SIGTERM is killed with SIGKILL after the grace period", async () => {
+    const started = Date.now();
+    const result = await runProcess(
+      ["/bin/sh", "-c", "trap '' TERM; echo ready; while true; do sleep 0.05; done"],
+      { timeoutMs: 300, graceMs: 200, drainMs: 200 },
+    );
+    expect(result.timedOut).toBe(true);
+    expect(result.stdout).toContain("ready");
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  test("a descendant that ignores SIGTERM and closed its pipes is still killed", async () => {
+    const started = Date.now();
+    const result = await runProcess(
+      ["/bin/sh", "-c", "(trap '' TERM; exec sleep 30) >/dev/null 2>&1 & echo \"PID:$!\"; sleep 30"],
+      { timeoutMs: 300, graceMs: 5000, drainMs: 200 },
+    );
+    expect(result.timedOut).toBe(true);
+    expect(Date.now() - started).toBeLessThan(3000);
+    const match = result.stdout.match(/PID:(\d+)/);
+    expect(await waitUntilDead(parseInt(match![1], 10))).toBe(true);
+  });
+
+  test("settles after the main process exits even if a child keeps the pipes open", async () => {
+    const started = Date.now();
+    const result = await runProcess(
+      ["/bin/sh", "-c", "sleep 30 & echo \"PID:$!\"; exit 0"],
+      { timeoutMs: 20000, drainMs: 200 },
+    );
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(result).toMatchObject({ exitCode: 0, timedOut: false });
+    const match = result.stdout.match(/PID:(\d+)/);
+    expect(await waitUntilDead(parseInt(match![1], 10))).toBe(true);
+  });
+
+  test("keeps multi-byte characters intact across output chunks", async () => {
+    const result = await runProcess(["/bin/sh", "-c", "printf '\\360\\237\\216\\211%.0s' $(seq 1 3000)"], { timeoutMs: 5000 });
+    expect(result.stdout).toBe("🎉".repeat(3000));
   });
 
   test("rejects when the program does not exist", async () => {
