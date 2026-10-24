@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "crypto";
-import { mkdirSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, existsSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { join } from "path";
 import { loadConfig, type Config } from "./config";
 import { MemoryStore } from "./memory/store";
@@ -21,17 +21,26 @@ export function serveOptions(config: Pick<Config, "httpPort">): { hostname: stri
   return { hostname: "127.0.0.1", port: config.httpPort };
 }
 
-// Writes a fresh API token on every engine start. The temp file is created
-// with mode 0600 and renamed into place, so readers never see a partial
-// token or a wider mode.
-export function ensureApiToken(dir: string): string {
-  const token = randomBytes(32).toString("hex");
-  const path = join(dir, "api-token");
-  const tmpPath = `${path}.tmp`;
-  rmSync(tmpPath, { force: true });
-  writeFileSync(tmpPath, `${token}\n`, { mode: 0o600, flag: "wx" });
+export function generateApiToken(): string {
+  return randomBytes(32).toString("hex");
+}
+
+// Each file is written to a uniquely named temp file created exclusively
+// with mode 0600, then renamed into place, so readers never see a partial
+// token or a wider mode and concurrent writers never share a temp file.
+function writeOwnerOnly(path: string, contents: string): void {
+  const tmpPath = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  writeFileSync(tmpPath, contents, { mode: 0o600, flag: "wx" });
   renameSync(tmpPath, path);
-  return token;
+}
+
+// Publishes the token for local callers. api-auth-header holds a ready-made
+// header line for `curl -H @file`, which keeps the token out of process
+// arguments. Call this only after the server has bound its port, so a
+// launch that fails to bind never replaces a running engine's token.
+export function publishApiToken(dir: string, token: string): void {
+  writeOwnerOnly(join(dir, "api-token"), `${token}\n`);
+  writeOwnerOnly(join(dir, "api-auth-header"), `Authorization: Bearer ${token}\n`);
 }
 
 function reject(status: number, error: string, req: Request): Response {
@@ -153,7 +162,7 @@ export function startCompanion() {
   // HTTP server
   const memoryRouter = createMemoryRouter(store, snapshotPath);
   const cronRouter = createCronRouter(registry, scheduler);
-  const apiToken = ensureApiToken(config.companionDir);
+  const apiToken = generateApiToken();
   const fetchHandler = buildFetchHandler(memoryRouter, cronRouter, { token: apiToken, port: config.httpPort });
 
   const { hostname, port } = serveOptions(config);
@@ -162,6 +171,7 @@ export function startCompanion() {
     port,
     fetch: fetchHandler,
   });
+  publishApiToken(config.companionDir, apiToken);
 
   console.log(`[engine] HTTP server listening on ${hostname}:${port}`);
 

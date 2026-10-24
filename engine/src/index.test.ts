@@ -6,14 +6,14 @@ process.env.TELEGRAM_BOT_TOKEN = "test-token";
 process.env.TELEGRAM_CHAT_ID = "123456";
 process.env.ANTHROPIC_API_KEY = "test-key";
 
-import { buildFetchHandler, ensureApiToken, serveOptions } from "./index";
+import { buildFetchHandler, generateApiToken, publishApiToken, serveOptions } from "./index";
 import { MemoryStore } from "./memory/store";
 import { CronRegistry } from "./cron/registry";
 import { CronScheduler } from "./cron/scheduler";
 import { createMemoryRouter } from "./memory/handler";
 import { createCronRouter } from "./cron/handler";
 import { TelegramClient } from "./telegram";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -188,37 +188,51 @@ describe("serveOptions", () => {
   });
 });
 
-describe("ensureApiToken", () => {
-  test("writes a 64-character hex token readable only by the owner", () => {
+describe("generateApiToken", () => {
+  test("returns a 64-character hex token", () => {
+    expect(generateApiToken()).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("returns a new token on every call", () => {
+    expect(generateApiToken()).not.toBe(generateApiToken());
+  });
+});
+
+describe("publishApiToken", () => {
+  test("writes the token file and the curl header file, both readable only by the owner", () => {
     const dir = mkdtempSync(join(tmpdir(), "engine-token-"));
     try {
-      const token = ensureApiToken(dir);
-      const path = join(dir, "api-token");
-      expect(token).toMatch(/^[0-9a-f]{64}$/);
-      expect(readFileSync(path, "utf-8").trim()).toBe(token);
-      expect(statSync(path).mode & 0o777).toBe(0o600);
+      const token = generateApiToken();
+      publishApiToken(dir, token);
+      const tokenPath = join(dir, "api-token");
+      const headerPath = join(dir, "api-auth-header");
+      expect(readFileSync(tokenPath, "utf-8").trim()).toBe(token);
+      expect(readFileSync(headerPath, "utf-8").trim()).toBe(`Authorization: Bearer ${token}`);
+      expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
+      expect(statSync(headerPath).mode & 0o777).toBe(0o600);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  test("writes a new token on every call", () => {
-    const dir = mkdtempSync(join(tmpdir(), "engine-token-"));
-    try {
-      expect(ensureApiToken(dir)).not.toBe(ensureApiToken(dir));
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("tightens the mode of an existing token file", () => {
+  test("replaces a world-readable token file with an owner-only one", () => {
     const dir = mkdtempSync(join(tmpdir(), "engine-token-"));
     try {
       const path = join(dir, "api-token");
       writeFileSync(path, "old");
       chmodSync(path, 0o644);
-      ensureApiToken(dir);
+      publishApiToken(dir, generateApiToken());
       expect(statSync(path).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("leaves no temporary files behind", () => {
+    const dir = mkdtempSync(join(tmpdir(), "engine-token-"));
+    try {
+      publishApiToken(dir, generateApiToken());
+      expect(readdirSync(dir).sort()).toEqual(["api-auth-header", "api-token"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

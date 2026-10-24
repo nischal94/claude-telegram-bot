@@ -4,18 +4,16 @@ You have access to a engine service at http://127.0.0.1:7823 that provides persi
 
 ### Authentication (every request)
 
-Every request except GET /health must send the engine's API token, read fresh from its file each time (the engine writes a new token whenever it restarts):
-
-  Authorization: Bearer $(cat ~/.claude/engine/api-token)
+Every request except GET /health must send the engine's API token. The engine writes a ready-made header line to ~/.claude/engine/api-auth-header at every start. Pass that file to curl with `-H @$HOME/.claude/engine/api-auth-header` on every request. Never expand the token into the command line (no `$(cat ...)`): command-line arguments are visible to other processes.
 
 Requests that send a JSON body must also send Content-Type: application/json. Use 127.0.0.1, not localhost. Example:
 
   curl -s -X POST http://127.0.0.1:7823/memory \
-    -H "Authorization: Bearer $(cat ~/.claude/engine/api-token)" \
+    -H @$HOME/.claude/engine/api-auth-header \
     -H "Content-Type: application/json" \
     -d '{"op": "add", "type": "fact", "key": "gym", "value": "6am Tuesdays", "source": "explicit"}'
 
-A 401 response means the token was missing or stale: read the file again and retry once.
+A 401 response means the engine restarted since the header file was read: retry once.
 
 ### Memory
 
