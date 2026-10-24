@@ -8,11 +8,18 @@ version: 2
 # produce a burst of upgrade PRs immediately. Set open-pull-requests-limit
 # low (1-2) at first if the repo has many outdated deps.
 
+#
+# Every ecosystem waits 7 days after a release before proposing it, so a
+# compromised release has time to be found and pulled first. The cooldown
+# applies to version updates only; security updates still open at once.
+
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "monthly"
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
       - "ci"
@@ -48,11 +55,15 @@ updates:
   #     interval: "weekly"
   #   labels: ["dependencies", "docker"]
 
-  - package-ecosystem: "npm"
-    directory: "/"
+  # The engine's manifest and bun.lock live in /engine. The "bun" ecosystem
+  # updates bun.lock together with package.json.
+  - package-ecosystem: "bun"
+    directory: "/engine"
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     labels: ["dependencies", "javascript"]
     commit-message:

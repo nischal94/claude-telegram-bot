@@ -7,6 +7,12 @@ prompts/*.txt
 # Secrets
 *.env
 .env*
+*.pem
+*.key
+credentials.json
+
+# Local tool state
+.superpowers/
 
 # Logs
 *.log

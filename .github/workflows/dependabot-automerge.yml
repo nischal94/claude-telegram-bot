@@ -1,12 +1,12 @@
 name: Dependabot auto-merge
 
-# Auto-merges Dependabot PRs that are safe by semver:
-#   * patch updates on any dep
-#   * minor updates on dev-only deps
+# Auto-merges patch updates of GitHub Actions only. Actions are pinned to
+# commit SHAs, and Dependabot waits 7 days after each release (see
+# .github/dependabot.yml).
 #
-# All other Dependabot PRs (prod minors, all majors) require human
-# review. CI must pass before merge — auto-merge respects required
-# status checks.
+# Engine package updates (bun ecosystem) never auto-merge: that code runs
+# as the owner, so every update gets a human review. All other Dependabot
+# PRs also require review. Auto-merge respects required status checks.
 
 on: pull_request_target
 
@@ -23,10 +23,11 @@ jobs:
         id: meta
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
       - name: Auto-merge eligible updates
+        # package-ecosystem comes from the Dependabot branch name,
+        # e.g. dependabot/github_actions/actions/checkout-7.
         if: |
-          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
-          (steps.meta.outputs.update-type == 'version-update:semver-minor' &&
-           steps.meta.outputs.dependency-type == 'direct:development')
+          steps.meta.outputs.package-ecosystem == 'github_actions' &&
+          steps.meta.outputs.update-type == 'version-update:semver-patch'
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
