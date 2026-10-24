@@ -198,6 +198,16 @@ describe("CronScheduler ties each run to one instance of a job", () => {
     }
   });
 
+  test("after stop, sync no longer creates timers", () => {
+    addReminder("r");
+    scheduler.start();
+    expect(scheduler.scheduledInstance("r")).toBeDefined();
+    scheduler.stop();
+    expect(scheduler.scheduledInstance("r")).toBeUndefined();
+    scheduler.sync();
+    expect(scheduler.scheduledInstance("r")).toBeUndefined();
+  });
+
   test("a run still queued for an old job does not block running its replacement", async () => {
     addReminder("slow", "first");
     addReminder("r", "old job");

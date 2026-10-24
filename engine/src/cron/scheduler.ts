@@ -41,10 +41,14 @@ export class CronScheduler {
   }
 
   start(): void {
+    this.stopped = false;
     this.sync();
     // Re-sync every minute to pick up registry changes
-    cron.schedule("* * * * *", () => this.sync());
+    this.syncTask = cron.schedule("* * * * *", () => this.sync());
   }
+
+  private syncTask: ReturnType<typeof cron.schedule> | null = null;
+  private stopped = false;
 
   // Queues a manual run. A manual run also runs a disabled job. A job that
   // is already queued or running is not queued again.
@@ -75,13 +79,19 @@ export class CronScheduler {
     return this.tasks.get(jobId)?.created;
   }
 
+  // Stops every timer, including the per-minute sync, so nothing fires or
+  // re-creates timers until start() is called again.
   stop(): void {
+    this.stopped = true;
+    this.syncTask?.stop();
+    this.syncTask = null;
     for (const { task } of this.tasks.values()) task.stop();
     this.tasks.clear();
   }
 
   // Matches timers to the registry: called at start and every minute.
   sync(): void {
+    if (this.stopped) return;
     const jobs = this.registry.list();
     const currentIds = new Set(jobs.map((j) => j.id));
 
