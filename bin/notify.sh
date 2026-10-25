@@ -26,6 +26,8 @@ fi
 MAX_ATTEMPTS=3
 DELAY="${CLAUDE_BOT_NOTIFY_DELAY:-2}"
 [[ "$DELAY" =~ ^[0-9]+$ ]] || DELAY=2
+# Base 10, so a leading zero (08) is not read as an invalid octal number.
+DELAY=$((10#$DELAY))
 SENT=0
 REJECTED=0
 for i in $(seq 1 $MAX_ATTEMPTS); do

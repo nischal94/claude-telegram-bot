@@ -23,14 +23,16 @@ setup() {
 echo "\$*" >> "$T/notify.log"
 EOF
 
-    # pgrep -f: the claude --channels process exists while \$T/claude_alive exists.
+    # Records every call in \$T/pgrep.log.
+    # pgrep ... -f: the claude --channels process exists while \$T/claude_alive exists.
     # pgrep -P: the bun child exists while \$T/bun_alive exists, or from the
     # Nth -P call onward when \$T/bun_on_call holds N.
     cat > "$T/stubs/pgrep" <<EOF
 #!/usr/bin/env bash
-case "\$1" in
-    -f) [[ -f "$T/claude_alive" ]] && echo 4242 && exit 0; exit 1 ;;
-    -P)
+echo "\$*" >> "$T/pgrep.log"
+case " \$* " in
+    *" -f "*) [[ -f "$T/claude_alive" ]] && echo 4242 && exit 0; exit 1 ;;
+    *" -P "*)
         [[ -f "$T/bun_alive" ]] && echo 4343 && exit 0
         if [[ -f "$T/bun_on_call" ]]; then
             echo x >> "$T/p_calls"
@@ -41,13 +43,16 @@ esac
 exit 1
 EOF
 
-    # has-session succeeds unless \$T/no_session exists.
+    # Records every call in \$T/tmux.log; has-session succeeds unless
+    # \$T/no_session exists; send-keys calls also go to \$T/sendkeys.log.
     cat > "$T/stubs/tmux" <<EOF
 #!/usr/bin/env bash
+echo "\$*" >> "$T/tmux.log"
 case "\$1" in
     has-session) [[ -f "$T/no_session" ]] && exit 1; exit 0 ;;
     capture-pane) cat "$T/pane" ;;
     kill-session) echo kill >> "$T/kills.log" ;;
+    send-keys) echo "\$*" >> "$T/sendkeys.log" ;;
 esac
 exit 0
 EOF
@@ -174,6 +179,50 @@ rm -f "$T/claude_alive"
 touch "$T/no_session"
 for _i in 1 2 3; do run_watchdog; done
 assert_eq "no session: no restarts, no alerts" "0 0" "$(kills) $(wc -l < "$T/notify.log" | tr -d ' ')"
+rm -rf "$T"
+
+# ── Process and session lookups are exact and owner-only ─────────────────────
+setup
+echo "normal output" > "$T/pane"
+touch "$T/bun_alive"
+run_watchdog
+assert_eq "pgrep for the bot is limited to the owner's uid" 1 "$(grep -c -- "-u $(id -u) -f" "$T/pgrep.log")"
+assert_eq "every tmux target is the exact session name" 0 "$(grep -- "-t" "$T/tmux.log" | grep -vc -- "-t =claude-bot")"
+rm -rf "$T"
+
+# ── A /compact that fails counts toward the restart cap ──────────────────────
+setup
+printf 'chat line\n  claude  95%% / 200k\n' > "$T/pane"
+touch "$T/bun_alive"
+for _i in 1 2 3 4 5 6 7; do run_watchdog; done
+assert_eq "failed compact: restarts capped at 5" 5 "$(kills)"
+assert_eq "failed compact: one give-up alert" 1 "$(count "stopped restarting" "$T/notify.log")"
+rm -rf "$T"
+
+# ── The context % comes from the status line, not from chat text ─────────────
+setup
+printf 'user: my disk is 95%% / 200k full, help\n\n  claude  10%% / 200k\n' > "$T/pane"
+touch "$T/bun_alive"
+run_watchdog
+assert_eq "chat text with a percentage: no /compact" 0 "$(cat "$T/sendkeys.log" 2>/dev/null | wc -l | tr -d ' ')"
+rm -rf "$T"
+
+# ── Login text on screen must not stop the restart of a dead plugin ──────────
+setup
+echo "user: what does 'Please run /login' mean?" > "$T/pane"
+run_watchdog
+assert_eq "dead plugin with login text on screen: restarted" 1 "$(kills)"
+assert_eq "dead plugin with login text on screen: no OAuth alert" 0 "$(count OAuth "$T/notify.log")"
+rm -rf "$T"
+
+# ── An expired login while the plugin runs: alert once, no restart ───────────
+setup
+echo "Not logged in · Please run /login" > "$T/pane"
+touch "$T/bun_alive"
+run_watchdog
+run_watchdog
+assert_eq "expired login, plugin alive: no restart" 0 "$(kills)"
+assert_eq "expired login, plugin alive: one OAuth alert" 1 "$(count OAuth "$T/notify.log")"
 rm -rf "$T"
 
 if [[ "$FAILURES" -gt 0 ]]; then

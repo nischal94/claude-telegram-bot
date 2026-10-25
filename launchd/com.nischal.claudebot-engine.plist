@@ -38,5 +38,9 @@
 
   <key>StandardErrorPath</key>
   <string>/Users/nischal/.claude/logs/engine.log</string>
+
+  <!-- 0077: files the job creates, logs included, are owner-only. -->
+  <key>Umask</key>
+  <integer>63</integer>
 </dict>
 </plist>

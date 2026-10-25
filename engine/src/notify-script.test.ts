@@ -21,6 +21,8 @@ beforeAll(() => {
   stubs = join(dir, "stubs");
   mkdirSync(stubs);
   stub("security", `case "$*" in *telegram-bot-token*) echo "${TOKEN}" ;; *telegram-chat-id*) echo 42 ;; esac`);
+  // Returns at once, so retry delays cost no test time.
+  stub("sleep", "exit 0");
   // Counts its calls, records its arguments, stdin and environment, and
   // prints the HTTP status in CURL_CODE (default 200), as -w '%{http_code}' does.
   stub("curl", `echo x >> "${dir}/curl-calls"
@@ -68,8 +70,15 @@ test("notify.sh does not retry a permanent rejection such as HTTP 401", () => {
   expect(result.stderr.toString()).toContain("Telegram rejected the message: HTTP 401");
 });
 
-// Uses 503 so the script reaches the delay arithmetic; the default delay
-// then sleeps 2 s and 4 s, hence the longer test timeout.
+test("notify.sh accepts a delay override with a leading zero", () => {
+  const result = runNotify("hello", { CURL_CODE: "503", CLAUDE_BOT_NOTIFY_DELAY: "08" });
+  expect(result.exitCode).toBe(0);
+  expect(calls()).toBe(3);
+  expect(result.stderr.toString()).not.toContain("value too great for base");
+  expect(result.stderr.toString()).toContain("message not sent after 3 attempts");
+});
+
+// Uses 503 so the script reaches the delay arithmetic.
 test("notify.sh falls back to the default delay when the override is not a whole number", () => {
   const result = runNotify("hello", { CURL_CODE: "503", CLAUDE_BOT_NOTIFY_DELAY: "1.5" });
   expect(result.exitCode).toBe(0);
