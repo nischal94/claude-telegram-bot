@@ -51,13 +51,15 @@ cp prompts/system-prompt.example.txt prompts/current.txt
 
 ### 3. Set up secrets
 
-Add to `~/.claude/.env` (create if it doesn't exist):
+The engine and `bin/notify.sh` read secrets from the macOS Keychain, so no secret is stored in a file. Add each one; `-w` with no value makes `security` prompt for it, which keeps it out of your shell history:
 
+```bash
+security add-generic-password -a "$USER" -s telegram-bot-token-claudebot -w
+security add-generic-password -a "$USER" -s telegram-chat-id-claudebot -w
+security add-generic-password -a "$USER" -s anthropic-api-claudebot -w
 ```
-ANTHROPIC_API_KEY=sk-ant-...
-TELEGRAM_BOT_TOKEN=your-bot-token
-TELEGRAM_CHAT_ID=your-numeric-chat-id
-```
+
+The Anthropic key is used by scheduled agent jobs. The bot itself runs on Claude Code's own login: run `claude` once in the project folder and sign in.
 
 To find your chat ID: message your bot, then visit:
 `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`

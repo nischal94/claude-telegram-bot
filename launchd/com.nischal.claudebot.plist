@@ -19,7 +19,7 @@
         <string>/Users/nischal/.local/bin:/Users/nischal/.npm-global/bin:/Users/nischal/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
         <string>/Users/nischal</string>
-        <!-- ANTHROPIC_API_KEY is loaded from ~/.claude/.env (chmod 600) by the wrapper script -->
+        <!-- No secrets here: the engine and notify.sh read them from macOS Keychain -->
     </dict>
 
     <!-- Start on login -->

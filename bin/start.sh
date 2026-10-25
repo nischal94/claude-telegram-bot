@@ -3,11 +3,9 @@
 # Kills any stale "claude-bot" tmux session, creates a fresh one,
 # then blocks until the session exits so launchd can track liveness.
 #
-# Authentication: Claude Code reads ANTHROPIC_API_KEY via the apiKeyHelper
-# configured in ~/projects/claude-telegram-bot/.claude/settings.json. The
-# helper script (~/.claude/scripts/anthropic-api-key-helper.sh) pulls the
-# key from macOS Keychain. This script does not handle the Anthropic key
-# directly — keeps it out of argv and out of any temp file on disk.
+# Authentication: the bot's Claude Code session uses Claude Code's own login.
+# When that login expires, bin/watchdog.sh sends an alert. This script reads
+# no secrets; the engine and bin/notify.sh read theirs from macOS Keychain.
 set -euo pipefail
 # Files this script creates are owner-only. The tmux server is started with
 # umask 022 (see below), so the bot log is made private by mode, not umask.
