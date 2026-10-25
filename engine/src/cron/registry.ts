@@ -109,6 +109,12 @@ export class CronRegistry {
     this.watcher = watch(dirname(registryPath), { persistent: false }, (event, filename) => {
       if (filename === "cron-jobs.json") this.reload();
     });
+    // On Linux the watcher can report an error for the temp file of an atomic
+    // save that was already renamed away. Without a listener that error is
+    // thrown and stops the engine. The folder watch keeps working, so log it.
+    this.watcher.on("error", (err: Error) => {
+      console.warn(`[registry] File watcher error: ${err.message}. Context: path=${this.path}`);
+    });
   }
 
   isWritable(): boolean {
