@@ -120,15 +120,18 @@ export class MemoryStore {
     checkInjection(entry.key);
     checkInjection(entry.value);
     this.db.transaction(() => {
-      const ids = (this.db
-        .query("SELECT id FROM memories WHERE type = ? AND key = ?")
-        .all(entry.type, entry.key) as { id: number }[]).map((r) => r.id);
-      if (ids.length === 0) throw new MemoryRejected(`no entry found with key "${entry.key}" of type "${entry.type}"`);
-      this.db.run(
+      const result = this.db.run(
         "UPDATE memories SET value = ?, source = ?, updated = CURRENT_TIMESTAMP WHERE type = ? AND key = ?",
         [entry.value, entry.source, entry.type, entry.key]
       );
-      this.enforceLimit(entry.type, entry.source, ids);
+      if (result.changes === 0) throw new MemoryRejected(`no entry found with key "${entry.key}" of type "${entry.type}"`);
+      // A replace keeps the row's old position, so going over the limit would
+      // drop some other saved row, not this one. Protect every row of the
+      // type and source it now belongs to: a replace never deletes anything.
+      const bucket = (this.db
+        .query("SELECT id FROM memories WHERE type = ? AND source = ?")
+        .all(entry.type, entry.source) as { id: number }[]).map((r) => r.id);
+      this.enforceLimit(entry.type, entry.source, bucket);
     })();
   }
 

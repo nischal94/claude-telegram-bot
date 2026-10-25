@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach, spyOn } from "bun:test";
-import { existsSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { importSeed } from "./seed";
 import { MemoryStore } from "./store";
@@ -81,6 +81,18 @@ test.each([
   expect(logged).toMatch(reason);
   expect(count()).toBe(0);
   expect(existsSync(flagPath)).toBe(false);
+});
+
+test("a missing flag is written later for a seed the database already recorded", () => {
+  writeFileSync(seedPath, JSON.stringify([{ type: "fact", key: "gym", value: "6am" }]));
+  const flagDir = join(dir, "flag-dir");
+  const laterFlag = join(flagDir, ".seed-imported");
+  quietly(() => importSeed(store, seedPath, laterFlag));
+  expect(existsSync(laterFlag)).toBe(false);
+  mkdirSync(flagDir);
+  importSeed(store, seedPath, laterFlag);
+  expect(existsSync(laterFlag)).toBe(true);
+  expect(count()).toBe(1);
 });
 
 test("if the flag file cannot be written, the seed is still not imported twice", () => {

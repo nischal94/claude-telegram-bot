@@ -122,6 +122,26 @@ describe("MemoryStore", () => {
     expect(store.getAll().preferences.some((e) => e.key === "tone")).toBe(true);
   });
 
+  test("a replace that grows an entry past the limit is refused and deletes nothing", () => {
+    store.add({ type: "fact", key: "a", value: "small", source: "explicit" });
+    store.add({ type: "fact", key: "b", value: "b".repeat(899), source: "explicit" });
+    expect(() =>
+      store.replace({ type: "fact", key: "a", value: "a".repeat(600), source: "explicit" })
+    ).toThrow(MemoryRejected);
+    const facts = store.getAll().facts;
+    expect(facts.map((e) => e.key)).toEqual(["a", "b"]);
+    expect(facts[0].value).toBe("small");
+  });
+
+  test("a replace that moves an old entry into a full source is refused and deletes nothing", () => {
+    store.add({ type: "fact", key: "old", value: "o".repeat(500), source: "inferred" });
+    store.add({ type: "fact", key: "new", value: "n".repeat(899), source: "explicit" });
+    expect(() =>
+      store.replace({ type: "fact", key: "old", value: "o".repeat(500), source: "explicit" })
+    ).toThrow(MemoryRejected);
+    expect(store.getAll().facts.map((e) => [e.key, e.source])).toEqual([["old", "inferred"], ["new", "explicit"]]);
+  });
+
   test("replace sets the source it is given", () => {
     store.add({ type: "fact", key: "gym", value: "6am", source: "explicit" });
     store.replace({ type: "fact", key: "gym", value: "7am", source: "inferred" });

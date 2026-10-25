@@ -22,8 +22,9 @@ export function importSeed(store: MemoryStore, seedPath: string, flagPath: strin
     const parsed: unknown = JSON.parse(readFileSync(seedPath, "utf-8"));
     if (!Array.isArray(parsed)) throw new Error("expected a list of entries");
     const entries = parsed.map(toEntry);
-    if (!store.importOnce(SEED_IMPORT, entries)) return;
-    console.log(`[engine] imported ${entries.length} seed memories`);
+    // false: the database already recorded this import, but the flag file
+    // is missing (an earlier write failed). Write it below.
+    if (store.importOnce(SEED_IMPORT, entries)) console.log(`[engine] imported ${entries.length} seed memories`);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`[engine] Failed to import seed: ${msg}. Context: path=${seedPath}`);
