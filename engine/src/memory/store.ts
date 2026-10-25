@@ -94,15 +94,24 @@ export class MemoryStore {
   }
 
   add(entry: MemoryEntry): void {
+    this.db.transaction(() => {
+      this.insert(entry, []);
+    })();
+  }
+
+  // Inserts one entry and applies the limit. The new row, and every row in
+  // `protect`, must survive the limit, or the caller's transaction is rolled
+  // back. Returns the new row's id.
+  private insert(entry: MemoryEntry, protect: number[]): number {
     checkInjection(entry.value);
     checkInjection(entry.key);
-    this.db.transaction(() => {
-      const result = this.db.run(
-        "INSERT INTO memories (type, key, value, source) VALUES (?, ?, ?, ?)",
-        [entry.type, entry.key, entry.value, entry.source]
-      );
-      this.enforceLimit(entry.type, entry.source, [Number(result.lastInsertRowid)]);
-    })();
+    const result = this.db.run(
+      "INSERT INTO memories (type, key, value, source) VALUES (?, ?, ?, ?)",
+      [entry.type, entry.key, entry.value, entry.source]
+    );
+    const id = Number(result.lastInsertRowid);
+    this.enforceLimit(entry.type, entry.source, [...protect, id]);
+    return id;
   }
 
   // Sets the value and the source: a replace that does not say the user asked
@@ -124,13 +133,15 @@ export class MemoryStore {
   }
 
   // Imports entries once under a name. All or nothing: if any entry is
-  // rejected, none are saved and the import is not recorded. The record is
-  // written in the same transaction, so a crash cannot import twice.
+  // rejected, or the limit would drop any entry of this import, none are
+  // saved and the import is not recorded. The record is written in the same
+  // transaction, so a crash cannot import twice.
   // Returns false if an import with this name already ran.
   importOnce(name: string, entries: MemoryEntry[]): boolean {
     return this.db.transaction(() => {
       if (this.db.query("SELECT 1 FROM imports WHERE name = ?").get(name)) return false;
-      for (const entry of entries) this.add(entry);
+      const written: number[] = [];
+      for (const entry of entries) written.push(this.insert(entry, written));
       this.db.run("INSERT INTO imports (name) VALUES (?)", [name]);
       return true;
     })();

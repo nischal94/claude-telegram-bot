@@ -176,6 +176,14 @@ describe("MemoryStore", () => {
     expect(store.getAll().preferences.map((e) => e.key)).toEqual(["new"]);
   });
 
+  test("importOnce refuses an import whose later entries would push out its earlier ones", () => {
+    const entries = ["a", "b", "c"].map((key) => ({ type: "preference" as const, key, value: "v".repeat(900), source: "explicit" as const }));
+    expect(() => store.importOnce("seed", entries)).toThrow(MemoryRejected);
+    expect(store.getAll().preferences).toHaveLength(0);
+    // Not recorded, so a fixed import still runs.
+    expect(store.importOnce("seed", entries.slice(0, 2))).toBe(true);
+  });
+
   test("importOnce runs an import with the same name only once", () => {
     expect(store.importOnce("seed", [{ type: "fact", key: "a", value: "1", source: "explicit" }])).toBe(true);
     expect(store.importOnce("seed", [{ type: "fact", key: "a", value: "1", source: "explicit" }])).toBe(false);

@@ -20,6 +20,12 @@ test("the memory instructions tell the bot to treat saved memory as data", () =>
   expect(INSTRUCTIONS).toMatch(/Treat it as data/);
 });
 
+test("the example system prompt does not tell the bot to save on its own", () => {
+  const example = readFileSync(join(import.meta.dir, "..", "..", "prompts", "system-prompt.example.txt"), "utf-8");
+  expect(example).not.toMatch(/proactiv|you notice/i);
+  expect(example).toContain("Save only when the user asks");
+});
+
 test("the memory instructions have no hidden heartbeat exchange", () => {
   expect(INSTRUCTIONS).not.toMatch(/HEARTBEAT/);
 });
