@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { makeTestDir } from "../test-tmp";
 import { join } from "path";
 import { CronRegistry } from "./registry";
 import { createCronRouter } from "./handler";
@@ -19,7 +19,7 @@ const fakeScheduler = {
 } as unknown as CronScheduler;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "cron-handler-test-"));
+  tmpDir = makeTestDir("cron-handler-test-");
   registry = new CronRegistry(join(tmpDir, "cron-jobs.json"));
   queued = [];
   router = createCronRouter(registry, fakeScheduler);

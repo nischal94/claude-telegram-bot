@@ -1,6 +1,7 @@
-import { writeFileSync, mkdirSync } from "fs";
+import { mkdirSync } from "fs";
 import { dirname } from "path";
 import type { AllMemories } from "./store";
+import { writeOwnerOnly } from "../fsutil";
 
 export function writeSnapshot(snapshotPath: string, memories: AllMemories): void {
   const lines: string[] = ["## Your Memory", ""];
@@ -19,6 +20,7 @@ export function writeSnapshot(snapshotPath: string, memories: AllMemories): void
   section("Facts", memories.facts);
   section("Learned", memories.learned);
 
-  mkdirSync(dirname(snapshotPath), { recursive: true });
-  writeFileSync(snapshotPath, lines.join("\n"), "utf-8");
+  mkdirSync(dirname(snapshotPath), { recursive: true, mode: 0o700 });
+  // The snapshot holds the owner's personal memory: owner-only.
+  writeOwnerOnly(snapshotPath, lines.join("\n"));
 }

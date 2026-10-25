@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { makeTestDir } from "../test-tmp";
 import { join } from "path";
 import { CronRegistry, isJobRecord, RegistryConflictError, type LoadState } from "./registry";
 
@@ -8,7 +8,7 @@ let tmpDir: string;
 let registry: CronRegistry;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "cron-test-"));
+  tmpDir = makeTestDir("cron-test-");
   registry = new CronRegistry(join(tmpDir, "cron-jobs.json"));
 });
 

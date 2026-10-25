@@ -1,5 +1,16 @@
 import { test, expect, mock, beforeEach, afterEach } from "bun:test";
-import { buildTextDigest, deliverTextDigest, fetchTrending } from "./github-trending";
+import { buildTextDigest, cardLaunchOptions, deliverTextDigest, fetchTrending } from "./github-trending";
+
+test("the card browser talks over a pipe and opens no TCP debugging port", () => {
+  const opts = cardLaunchOptions("/path/to/chrome-headless-shell");
+  expect(opts.pipe).toBe(true);
+  expect(opts.executablePath).toBe("/path/to/chrome-headless-shell");
+  expect(opts.args.some((a) => a.startsWith("--remote-debugging-port"))).toBe(false);
+});
+
+test("the card browser keeps Chromium's own sandbox", () => {
+  expect(cardLaunchOptions("/x").args).not.toContain("--no-sandbox");
+});
 
 // Minimal fixture HTML that mirrors GitHub's trending page structure
 const FIXTURE_HTML = `

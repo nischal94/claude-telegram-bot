@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "fs";
+import { chmodSync, existsSync, mkdirSync } from "fs";
 import { dirname } from "path";
 
 export type MemoryType = "preference" | "fact" | "learned";
@@ -45,8 +45,15 @@ export class MemoryStore {
   private db: Database;
 
   constructor(dbPath: string) {
-    mkdirSync(dirname(dbPath), { recursive: true });
+    mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
     this.db = new Database(dbPath);
+    // The database holds the owner's personal memory. SQLite creates it with
+    // the process umask and gives new -wal and -shm files the database's
+    // mode; journal files left from an earlier run keep their own mode, so
+    // tighten all three.
+    for (const path of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+      if (existsSync(path)) chmodSync(path, 0o600);
+    }
     this.db.run("PRAGMA journal_mode=WAL");
     this.db.run(`
       CREATE TABLE IF NOT EXISTS memories (

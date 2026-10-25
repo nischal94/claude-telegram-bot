@@ -4,8 +4,13 @@
 # still-running claude process, and kills the tmux session to trigger a
 # launchd restart.
 set -uo pipefail
+# Logs and stamp files this script creates are readable only by the owner.
+umask 077
 
 SESSION="claude-bot"
+# "=" makes tmux match the session name exactly, so a session whose name
+# merely starts with claude-bot is never hit. Pane commands take "=name:".
+TARGET="=$SESSION"
 LOG_FILE="$HOME/.claude/logs/claudebot-watchdog.log"
 NOTIFY="$HOME/bin/claude-bot-notify.sh"
 RECOVERY_INTERVAL=5
@@ -29,6 +34,9 @@ GIVE_UP_STAMP="$HOME/.claude/logs/.claudebot-give-up-alert-sent"
 MAX_RESTARTS=5
 
 mkdir -p "$(dirname "$LOG_FILE")"
+# Logs created before the umask above keep their old modes; an owner-only
+# folder keeps every file in it private regardless.
+chmod 700 "$(dirname "$LOG_FILE")" 2>/dev/null || true
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [watchdog] $*" | tee -a "$LOG_FILE"
@@ -61,20 +69,58 @@ mark_healthy() {
     rm -f "$RESTART_COUNT_FILE" "$GIVE_UP_STAMP" "$TRUST_ALERT_STAMP"
 }
 
+# The bot's claude processes. pgrep -f alone matches any user's processes,
+# so another account could run one with a matching command line.
+find_bot_pids() {
+    pgrep -u "$(id -u)" -f "claude.*--channels plugin:telegram" 2>/dev/null || true
+}
+
+# The bottom of the pane: the status line block (context bar, usage lines)
+# and Claude Code's footer. Text above it is chat, which can quote anything.
+BOTTOM_LINES=8
+# The login error is a chat line above the input box, a spinner line and the
+# status block, so the login check reads a larger window. A missed expiry
+# leaves the bot down with no alert; a false one costs one de-duped message.
+LOGIN_LINES=16
+pane_bottom() {
+    tmux capture-pane -t "$TARGET:" -p 2>/dev/null \
+        | grep -v '^[[:space:]]*$' \
+        | tail -n "${1:-$BOTTOM_LINES}"
+}
+
+# The context % from the status line's bar, e.g. "[████░░░░░░ 45% / 200k]"
+# or "[…] 92% / 1.0m]" for a 1M context. Only the bracketed form near the
+# bottom counts, so a percentage quoted in chat is not mistaken for it.
+context_pct() {
+    pane_bottom \
+        | grep -oE '\[[^]]* [0-9]+% / [0-9.]+[km]\]' \
+        | tail -n 1 \
+        | grep -oE '[0-9]+%' \
+        | tr -d '%'
+}
+
+# True when the restart cap is reached, without counting a restart.
+restart_cap_reached() {
+    local count
+    count=$(cat "$RESTART_COUNT_FILE" 2>/dev/null || echo 0)
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    [[ "$count" -ge "$MAX_RESTARTS" ]]
+}
+
 # ── Step 1: Find the bot's claude PID ────────────────────────────────────────
 PIDS=()
 while IFS= read -r pid; do
     [[ -n "$pid" ]] && PIDS+=("$pid")
-done < <(pgrep -f "claude.*--channels plugin:telegram" 2>/dev/null || true)
+done < <(find_bot_pids)
 
 if [[ ${#PIDS[@]} -eq 0 ]]; then
     # No claude --channels process. If the tmux session is still alive, the
     # wrapper is hung waiting on an empty session — kill the session so the
     # wrapper exits and launchd respawns it. Otherwise leave it for launchd.
-    if tmux has-session -t "$SESSION" 2>/dev/null; then
+    if tmux has-session -t "$TARGET" 2>/dev/null; then
         claim_restart || exit 0
         log "Stale tmux session with no claude process — killing to trigger relaunch ($RESTART_COUNT/$MAX_RESTARTS)"
-        tmux kill-session -t "$SESSION" 2>/dev/null || true
+        tmux kill-session -t "$TARGET" 2>/dev/null || true
         [[ -x "$NOTIFY" ]] && "$NOTIFY" "⚠️ Bot restarted — claude CLI died inside live tmux session" || true
     fi
     exit 0
@@ -87,26 +133,64 @@ fi
 
 CLAUDE_PID="${PIDS[0]}"
 
-# ── Step 1b: Check context window usage ──────────────────────────────────────
+check_healthy() {
+    pgrep -P "$CLAUDE_PID" bun > /dev/null 2>&1
+}
+
+PANE_TEXT=""
+PANE_LOGIN=""
+if tmux has-session -t "$TARGET" 2>/dev/null; then
+    PANE_TEXT=$(tmux capture-pane -t "$TARGET:" -p 2>/dev/null || true)
+    PANE_LOGIN=$(pane_bottom "$LOGIN_LINES" || true)
+fi
+
+# ── Step 1b: Detect OAuth expiry ─────────────────────────────────────────────
+# When the OAuth session dies, the bot still runs and the bun plugin is still
+# loaded — it just can't call the API. Symptom is a "Please run /login" or
+# "Not logged in" string in the tmux pane. We alert the user once (de-duped
+# via stamp file) and let the bot sit until it gets re-authed.
+# - Checked before compaction: without a login, /compact cannot work, and
+#   trying it would only restart the bot until the cap, hiding the alert.
+# - Checked only while the plugin runs: if the plugin is dead, login text on
+#   screen (perhaps quoted in chat) must not stop the restart.
+# - Only the last $LOGIN_LINES lines are read, so chat quoting the text
+#   higher up does not raise a false alert.
+if check_healthy; then
+    if [[ -n "$PANE_LOGIN" ]] && grep -qE 'Not logged in|Please run /login' <<< "$PANE_LOGIN"; then
+        if [[ ! -f "$OAUTH_ALERT_STAMP" ]]; then
+            log "OAuth session expired — bot is alive but unauthenticated. Alerting user."
+            "$NOTIFY" "🔐 Bot OAuth session expired. Run: ~/bin/claude-bot-relogin.sh" || true
+            touch "$OAUTH_ALERT_STAMP"
+        fi
+        # Don't kill or restart — that won't fix auth. Let the human handle it.
+        exit 0
+    fi
+    # Reset the alert stamp once we're past the unauthenticated state, so the
+    # next expiry will alert again.
+    [[ -f "$OAUTH_ALERT_STAMP" ]] && rm -f "$OAUTH_ALERT_STAMP"
+fi
+
+# ── Step 1c: Check context window usage ──────────────────────────────────────
 CTX_PCT=""
-if tmux has-session -t "$SESSION" 2>/dev/null; then
-    CTX_PCT=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null \
-        | grep -oE '[0-9]+% / [0-9]+(k|m)' \
-        | head -1 \
-        | grep -oE '^[0-9]+')
+if tmux has-session -t "$TARGET" 2>/dev/null; then
+    CTX_PCT=$(context_pct)
 fi
 
 if [[ -n "$CTX_PCT" ]] && [[ "$CTX_PCT" -gt "$CONTEXT_THRESHOLD" ]] 2>/dev/null; then
+    # A failed /compact ends in a restart; once restarts are used up, don't
+    # keep sending /compact and blocking for 60 s on every tick.
+    if restart_cap_reached; then
+        log "Context window at ${CTX_PCT}% but the restart cap is reached — not compacting."
+        claim_restart || true  # sends the one-time "stopped restarting" alert
+        exit 0
+    fi
     log "Context window at ${CTX_PCT}% (threshold: ${CONTEXT_THRESHOLD}%). Sending /compact."
-    tmux send-keys -t "$SESSION" "/compact" Enter
+    tmux send-keys -t "$TARGET:" "/compact" Enter
     # Wait up to 60s for context % to drop below threshold
     COMPACTED=false
     for (( i=1; i<=12; i++ )); do
         sleep 5
-        NEW_PCT=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null \
-            | grep -oE '[0-9]+% / [0-9]+(k|m)' \
-            | head -1 \
-            | grep -oE '^[0-9]+')
+        NEW_PCT=$(context_pct)
         if [[ -n "$NEW_PCT" ]] && [[ "$NEW_PCT" -lt "$CTX_PCT" ]]; then
             COMPACTED=true
             break
@@ -116,42 +200,17 @@ if [[ -n "$CTX_PCT" ]] && [[ "$CTX_PCT" -gt "$CONTEXT_THRESHOLD" ]] 2>/dev/null;
         log "Compact completed — context now ${NEW_PCT}%."
         "$NOTIFY" "♻️ Bot context compacted (was ${CTX_PCT}%, now ${NEW_PCT}%)" || true
     else
-        log "Compact did not reduce context within 60s — forcing restart."
-        tmux kill-session -t "$SESSION" 2>/dev/null || true
+        # Counts toward the restart cap, so a context that never shrinks
+        # cannot restart the bot every few minutes.
+        claim_restart || exit 0
+        log "Compact did not reduce context within 60s — forcing restart ($RESTART_COUNT/$MAX_RESTARTS)."
+        tmux kill-session -t "$TARGET" 2>/dev/null || true
         "$NOTIFY" "⚠️ Bot restarted — /compact failed to clear context (was ${CTX_PCT}% full)" || true
     fi
     exit 0
 fi
 
-# ── Step 1c: Detect OAuth expiry ─────────────────────────────────────────────
-# When the OAuth session dies, the bot still runs and the bun plugin is still
-# loaded — it just can't call the API. Symptom is a "Please run /login" or
-# "Not logged in" string appearing in the tmux pane. We alert the user once
-# (de-duped via stamp file) and let the bot sit until it gets re-authed.
-PANE_TEXT=""
-if tmux has-session -t "$SESSION" 2>/dev/null; then
-    PANE_TEXT=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || true)
-fi
-
-if [[ -n "$PANE_TEXT" ]] && grep -qE 'Not logged in|Please run /login' <<< "$PANE_TEXT"; then
-    if [[ ! -f "$OAUTH_ALERT_STAMP" ]]; then
-        log "OAuth session expired — bot is alive but unauthenticated. Alerting user."
-        "$NOTIFY" "🔐 Bot OAuth session expired. Run: ~/bin/claude-bot-relogin.sh" || true
-        touch "$OAUTH_ALERT_STAMP"
-    fi
-    # Don't kill or restart — that won't fix auth. Let the human handle it.
-    exit 0
-fi
-
-# Reset the alert stamp once we're past the unauthenticated state, so the next
-# expiry will alert again.
-[[ -f "$OAUTH_ALERT_STAMP" ]] && rm -f "$OAUTH_ALERT_STAMP"
-
 # ── Step 2: Check for bun child (Telegram plugin) ────────────────────────────
-check_healthy() {
-    pgrep -P "$CLAUDE_PID" bun > /dev/null 2>&1
-}
-
 if check_healthy; then
     log "HEALTHY (context: ${CTX_PCT:-unknown}%)"
     mark_healthy
@@ -185,7 +244,7 @@ fi
 # ── Step 4: Plugin confirmed dead — act, unless restarts keep failing ────────
 claim_restart || exit 0
 log "Telegram plugin dead (no bun child of PID $CLAUDE_PID). Restarting bot ($RESTART_COUNT/$MAX_RESTARTS)."
-tmux kill-session -t "$SESSION" 2>/dev/null || true
+tmux kill-session -t "$TARGET" 2>/dev/null || true
 
 # ── Step 5: Poll for recovery (claude process + bun child both present) ──────
 RECOVERED=false
@@ -194,7 +253,7 @@ for (( i=1; i<=RECOVERY_ATTEMPTS; i++ )); do
     NEW_PIDS=()
     while IFS= read -r pid; do
         [[ -n "$pid" ]] && NEW_PIDS+=("$pid")
-    done < <(pgrep -f "claude.*--channels plugin:telegram" 2>/dev/null || true)
+    done < <(find_bot_pids)
     if [[ ${#NEW_PIDS[@]} -ge 1 ]]; then
         NEW_PID="${NEW_PIDS[${#NEW_PIDS[@]}-1]}"  # use the last one (bash 3.2 safe)
         if pgrep -P "$NEW_PID" bun > /dev/null 2>&1; then

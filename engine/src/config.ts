@@ -18,8 +18,10 @@ const KEYCHAIN_SERVICES = {
   ANTHROPIC_API_KEY: "anthropic-api-claudebot",
 } as const;
 
-function readKeychain(service: string): string | undefined {
-  const proc = Bun.spawnSync(["security", "find-generic-password", "-s", service, "-w"]);
+// Absolute path: the launchd PATH puts /opt/homebrew/bin and /usr/local/bin
+// first, and a `security` there would receive every secret the engine reads.
+export function readKeychain(service: string): string | undefined {
+  const proc = Bun.spawnSync(["/usr/bin/security", "find-generic-password", "-s", service, "-w"]);
   if (proc.exitCode !== 0) return undefined;
   const value = proc.stdout.toString().trim();
   return value || undefined;
