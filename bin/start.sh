@@ -48,6 +48,7 @@ BOT_PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.bun/bin:/opt/homebrew/bi
 # If no tmux server is running, this call starts one, and every later session
 # on the default socket inherits its umask, including the user's own. Start it
 # with the usual 022 so the umask above does not leak into those sessions.
+# launch_bot.sh sets 077 for the bot process itself.
 (
     umask 022
     tmux new-session -d -s "$SESSION" \

@@ -2,6 +2,9 @@
 # Launch the Telegram bot with the current optimized system prompt.
 
 set -euo pipefail
+# Files the bot and its child processes create are owner-only. The tmux
+# server runs with umask 022 (see bin/start.sh), so set it here.
+umask 077
 
 EXPERIMENT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROMPT_FILE="$EXPERIMENT_DIR/prompts/current.txt"
