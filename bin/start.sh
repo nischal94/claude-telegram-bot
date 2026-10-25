@@ -24,9 +24,13 @@ BOT_LOG="$LOG_DIR/claudebot.log"
 mkdir -p "$LOG_DIR"
 # The log holds the bot's whole screen, chat included. Logs created before
 # the umask above keep their old modes, so make the folder owner-only (which
-# keeps every log in it private) and the bot log 0600. A failure here is
-# reported but does not stop the bot from starting.
-if ! { chmod 700 "$LOG_DIR" && touch "$BOT_LOG" && chmod 600 "$BOT_LOG"; }; then
+# keeps every log in it private) and the bot log 0600. Each step runs on its
+# own, so one failure does not skip the other. A failure is reported but does
+# not stop the bot from starting.
+if ! chmod 700 "$LOG_DIR"; then
+    echo "[claude-bot-start] could not make $LOG_DIR owner-only" >&2
+fi
+if ! { touch "$BOT_LOG" && chmod 600 "$BOT_LOG"; }; then
     echo "[claude-bot-start] could not make $BOT_LOG owner-only" >&2
 fi
 
