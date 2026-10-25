@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { makeTestDir } from "../test-tmp";
 import { join } from "path";
 import { agentArgv, agentEnv, executeJob, runProcess, type ExecutorOptions } from "./executor";
 import type { CronJob } from "./registry";
@@ -26,7 +26,7 @@ function isAlive(pid: number): boolean {
 }
 
 beforeAll(() => {
-  tmpDir = realpathSync(mkdtempSync(join(tmpdir(), "cron-executor-test-")));
+  tmpDir = realpathSync(makeTestDir("cron-executor-test-"));
   const agentCwd = join(tmpDir, "agent-cwd");
   mkdirSync(agentCwd, { mode: 0o700 });
   // A stand-in for the claude CLI: prints its working directory, the API key

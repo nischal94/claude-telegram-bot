@@ -1,6 +1,6 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { makeTestDir } from "./test-tmp";
 import { join } from "path";
 
 // bin/notify.sh, run with stand-in `security` and `curl` commands.
@@ -17,7 +17,7 @@ function stub(name: string, body: string): void {
 }
 
 beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), "notify-test-"));
+  dir = makeTestDir("notify-test-");
   stubs = join(dir, "stubs");
   mkdirSync(stubs);
   stub("security", `case "$*" in *telegram-bot-token*) echo "${TOKEN}" ;; *telegram-chat-id*) echo 42 ;; esac`);

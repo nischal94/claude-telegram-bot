@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
-import { tmpdir } from "os";
+import { makeTestDir } from "../test-tmp";
 import { join } from "path";
 import { CronRegistry, type CronJob } from "./registry";
 import { CronScheduler } from "./scheduler";
@@ -29,7 +29,7 @@ const telegram = {
 } as unknown as TelegramClient;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "cron-scheduler-test-"));
+  tmpDir = makeTestDir("cron-scheduler-test-");
   registry = new CronRegistry(join(tmpDir, "cron-jobs.json"));
   sent = [];
   failSends = 0;

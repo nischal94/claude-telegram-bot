@@ -15,10 +15,10 @@ import { createCronRouter } from "./cron/handler";
 import { TelegramClient } from "./telegram";
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
-import { tmpdir } from "os";
+import { makeTestDir } from "./test-tmp";
 
 // Set up isolated test fixtures in a fresh directory, so runs never share state
-const testDir = mkdtempSync(join(tmpdir(), "engine-test-"));
+const testDir = makeTestDir("engine-test-");
 
 const store = new MemoryStore(join(testDir, "test-memory.db"));
 const registry = new CronRegistry(join(testDir, "test-cron-jobs.json"));
@@ -70,7 +70,7 @@ function cronJob(id: string): Record<string, string> {
 }
 
 function withTempDir(fn: (dir: string) => void): void {
-  const dir = mkdtempSync(join(tmpdir(), "engine-token-"));
+  const dir = makeTestDir("engine-token-");
   try {
     fn(dir);
   } finally {
@@ -261,7 +261,22 @@ describe("engine HTTP request checks", () => {
   });
 });
 
-describe("served over a real socket", () => {
+// Some sandboxed runners block opening local ports; Bun then reports the
+// bind as EADDRINUSE even for port 0. These tests are skipped only there.
+// In CI (CI=true) they always run, so a broken CI runner fails instead of
+// skipping them silently.
+function canListenLocally(): boolean {
+  if (process.env.CI) return true;
+  try {
+    Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() }).stop(true);
+    return true;
+  } catch {
+    console.warn("[index.test] skipping real-socket tests: this environment blocks local ports");
+    return false;
+  }
+}
+
+describe.skipIf(!canListenLocally())("served over a real socket", () => {
   // Sends a raw HTTP/1.1 request so the Host header is exactly what a
   // DNS-rebinding page would send, then returns the status line.
   async function rawRequest(port: number, host: string): Promise<string> {

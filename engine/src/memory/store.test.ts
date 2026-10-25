@@ -1,14 +1,14 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
-import { tmpdir } from "os";
+import { rmSync } from "fs";
 import { join } from "path";
 import { MemoryStore } from "./store";
+import { makeTestDir } from "../test-tmp";
 
 let tmpDir: string;
 let store: MemoryStore;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "engine-test-"));
+  tmpDir = makeTestDir("engine-test-");
   store = new MemoryStore(join(tmpDir, "memory.db"));
 });
 
