@@ -26,11 +26,17 @@ function killBot(logPath: string): void {
   }
 }
 
+// pgrep -f alone matches any user's process; another account could run a
+// process with a matching command line. Look only at the owner's processes.
+export function botPgrepArgs(uid: number): string[] {
+  return ["-u", String(uid), "-f", "claude.*--channels plugin:telegram"];
+}
+
 async function waitForBotRestart(timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await Bun.sleep(POLL_INTERVAL_MS);
-    const result = spawnSync("pgrep", ["-f", "claude.*--channels plugin:telegram"], { encoding: "utf-8" });
+    const result = spawnSync("pgrep", botPgrepArgs(process.getuid!()), { encoding: "utf-8" });
     const pids = (result.stdout ?? "").trim().split("\n").filter(Boolean);
     if (pids.length === 1) {
       // also check bun child

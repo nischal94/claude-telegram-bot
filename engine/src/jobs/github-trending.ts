@@ -1,7 +1,7 @@
 import { parse } from "node-html-parser";
 import { join } from "path";
-import { homedir } from "os";
-import { readFileSync, unlinkSync, readdirSync } from "fs";
+import { homedir, tmpdir } from "os";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync } from "fs";
 import { TelegramClient } from "../telegram";
 import { loadConfig } from "../config";
 
@@ -155,10 +155,7 @@ export async function renderCard(
   const tmpHtml = outputPath.replace(/\.png$/, ".html");
   await Bun.write(tmpHtml, html);
 
-  const browser = await puppeteer.launch({
-    executablePath: resolveHeadlessShell(),
-    args: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
-  });
+  const browser = await puppeteer.launch(cardLaunchOptions(resolveHeadlessShell()));
 
   try {
     const page = await browser.newPage();
@@ -171,13 +168,27 @@ export async function renderCard(
   }
 }
 
+// pipe: true connects to Chromium over a pipe, so the browser opens no TCP
+// DevTools port that other local processes could drive. Chromium keeps its
+// own sandbox (no --no-sandbox): the page holds scraped third-party text.
+export function cardLaunchOptions(executablePath: string): { executablePath: string; pipe: true; args: string[] } {
+  return {
+    executablePath,
+    pipe: true,
+    args: ["--disable-gpu", "--disable-dev-shm-usage"],
+  };
+}
+
 export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
   const config = loadConfig();
   const telegram = new TelegramClient(config.telegramBotToken, config.telegramChatId);
 
   const repos = await fetchTrending(period);
-  const tmpDir = process.env.TMPDIR ?? "/tmp";
-  const tmpPath = `${tmpDir}/trending-${period}-${new Date().toISOString().slice(0, 10)}.png`;
+  // A fresh owner-only folder (mkdtemp creates it 0700), so no other process
+  // can predict the card's path or swap its files. os.tmpdir() also covers an
+  // empty TMPDIR, which used to put the card at the filesystem root.
+  const workDir = mkdtempSync(join(tmpdir(), "trending-"));
+  const tmpPath = join(workDir, `trending-${period}.png`);
   const periodLabel = period === "weekly" ? "this week" : "last month";
 
   let renderError: string | null = null;
@@ -192,7 +203,7 @@ export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
     // (e.g. the Playwright browser cache was cleared) is visible, not silent.
     renderError = (e instanceof Error ? e.message : String(e)).split("\n")[0];
   } finally {
-    try { unlinkSync(tmpPath); } catch (e) { console.warn("[github-trending] failed to clean up temp PNG:", e); }
+    try { rmSync(workDir, { recursive: true, force: true }); } catch (e) { console.warn("[github-trending] failed to clean up the card folder:", e); }
   }
 
   await deliverTextDigest(telegram, repos, period, renderError, new Date());
