@@ -5,6 +5,10 @@ import { dirname } from "path";
 export type MemoryType = "preference" | "fact" | "learned";
 export type MemorySource = "explicit" | "inferred";
 
+export const MEMORY_TYPES: ReadonlySet<string> = new Set<MemoryType>(["preference", "fact", "learned"]);
+export const MAX_KEY_LENGTH = 100;
+export const MAX_VALUE_LENGTH = 1000;
+
 export interface MemoryEntry {
   id?: number;
   type: MemoryType;
@@ -28,15 +32,21 @@ const LIMITS: Record<MemoryType, number> = {
 const INJECTION_PATTERNS = [
   /ignore previous instructions/i,
   /you are now/i,
-  /[\u200b-\u200f\u202a-\u202e]/,
+  // Invisible characters: zero-width and direction marks, embeddings and
+  // overrides, word joiner and invisible operators, isolates, byte order mark.
+  /[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/,
   /curl.*\$|wget.*\$/i,
   /\.env/i,
 ];
 
+// A write the store refuses on purpose. Its message is safe to show the
+// caller; any other error may carry SQLite or file details and is not.
+export class MemoryRejected extends Error {}
+
 function checkInjection(value: string): void {
   for (const pattern of INJECTION_PATTERNS) {
     if (pattern.test(value)) {
-      throw new Error(`blocked: injection pattern detected`);
+      throw new MemoryRejected(`blocked: injection pattern detected`);
     }
   }
 }
@@ -94,8 +104,15 @@ export class MemoryStore {
       "UPDATE memories SET value = ?, updated = CURRENT_TIMESTAMP WHERE type = ? AND key = ?",
       [entry.value, entry.type, entry.key]
     );
-    if (result.changes === 0) throw new Error(`no entry found with key "${entry.key}" of type "${entry.type}"`);
+    if (result.changes === 0) throw new MemoryRejected(`no entry found with key "${entry.key}" of type "${entry.type}"`);
     this.enforceLimit(entry.type);
+  }
+
+  // All or nothing: if any entry is rejected, none are saved.
+  importEntries(entries: MemoryEntry[]): void {
+    this.db.transaction(() => {
+      for (const entry of entries) this.add(entry);
+    })();
   }
 
   remove(entry: { type: MemoryType; key: string }): void {
