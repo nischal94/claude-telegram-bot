@@ -187,7 +187,14 @@ export class TelegramClient {
         await this.sleep(2000);
         continue;
       }
-      const data = await res.json() as { result: { update_id: number; message?: { text?: string } }[] };
+      let data: { result: { update_id: number; message?: { text?: string } }[] };
+      try {
+        data = await res.json() as typeof data;
+      } catch {
+        // A body that stalls past the timeout or is not JSON: poll again.
+        await this.sleep(2000);
+        continue;
+      }
       for (const update of data.result) {
         this.offset = update.update_id + 1;
         if (update.message?.text?.includes(pattern)) return true;

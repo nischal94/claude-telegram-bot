@@ -25,27 +25,36 @@ fi
 
 MAX_ATTEMPTS=3
 DELAY="${CLAUDE_BOT_NOTIFY_DELAY:-2}"
+[[ "$DELAY" =~ ^[0-9]+$ ]] || DELAY=2
 SENT=0
+REJECTED=0
 for i in $(seq 1 $MAX_ATTEMPTS); do
     # The URL holds the bot token, so it goes to curl as a config on stdin
     # (-K -), not as an argument that `ps` could show. printf is a shell
     # builtin, so the token is never in any process's arguments.
-    # --fail makes an HTTP error (401, 429, 5xx) a failed attempt.
-    if printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" | curl -s --fail --max-time 10 -X POST -K - \
+    # curl prints only the HTTP status; 000 means no answer at all.
+    CODE=$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" | curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST -K - \
         -d "chat_id=${TELEGRAM_CHAT_ID}" \
         --data-urlencode "text=${MSG}" \
         --data-urlencode 'link_preview_options={"is_disabled":true}' \
-        > /dev/null 2>&1; then
-        SENT=1
-        break
-    fi
+        2>/dev/null)
+    case "$CODE" in
+        2??) SENT=1; break ;;
+        000|429|5??) ;;  # no answer, rate limit or server error: try again
+        *)
+            # Any other answer (401, 403, 400) fails the same way every time.
+            echo "[claude-bot-notify] Telegram rejected the message: HTTP $CODE" >&2
+            REJECTED=1
+            break
+            ;;
+    esac
     if [ "$i" -lt "$MAX_ATTEMPTS" ]; then
         sleep "$DELAY"
         DELAY=$((DELAY * 2))
     fi
 done
 
-if [ "$SENT" -eq 0 ]; then
+if [ "$SENT" -eq 0 ] && [ "$REJECTED" -eq 0 ]; then
     # curl's own error text stays hidden; it could include the request.
     echo "[claude-bot-notify] message not sent after $MAX_ATTEMPTS attempts" >&2
 fi

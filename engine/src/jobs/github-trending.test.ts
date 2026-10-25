@@ -79,7 +79,10 @@ test("the text digest cuts long descriptions so the HTML stays under Telegram's 
   }));
   const text = buildTextDigest(repos, "weekly", "e".repeat(1000), NOW);
   // Telegram counts the limit after parsing: tags vanish, entities count once.
-  const rendered = text.replace(/<[^>]+>/g, "").replace(/&(lt|gt|amp|quot);/g, "x");
+  // The digest uses only these four tags, so remove them exactly.
+  const rendered = ["<b>", "</b>", "<i>", "</i>"]
+    .reduce((t, tag) => t.split(tag).join(""), text)
+    .replace(/&(lt|gt|amp|quot);/g, "x");
   expect(rendered.length).toBeLessThanOrEqual(4096);
   expect(text).toContain("…</i>");
   // Escaping happens after the cut, so no entity is split.

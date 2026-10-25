@@ -226,6 +226,14 @@ describe("retries", () => {
     expect(sleeps).toEqual([2000]);
   });
 
+  test("waitForPong keeps polling when a poll's body cannot be read", async () => {
+    const sleeps: number[] = [];
+    const pong = JSON.stringify({ ok: true, result: [{ update_id: 1, message: { text: "[HEARTBEAT_PONG_n1]" } }] });
+    recordingFetch([async () => new Response("not json"), async () => new Response(pong)]);
+    expect(await client(sleeps).waitForPong("n1", 5_000)).toBe(true);
+    expect(sleeps).toEqual([2000]);
+  });
+
   test("waitForPong returns false at the deadline when every poll fails", async () => {
     globalThis.fetch = mock((input: string | URL | Request) => failingFetch(String(input))) as any;
     const started = Date.now();

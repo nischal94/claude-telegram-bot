@@ -21,31 +21,62 @@ beforeAll(() => {
   stubs = join(dir, "stubs");
   mkdirSync(stubs);
   stub("security", `case "$*" in *telegram-bot-token*) echo "${TOKEN}" ;; *telegram-chat-id*) echo 42 ;; esac`);
-  // Records its arguments and whatever arrives on stdin. With CURL_FAIL set,
-  // counts the call and fails the way `curl --fail` does on an HTTP error.
-  stub("curl", `if [ -n "\${CURL_FAIL:-}" ]; then echo x >> "${dir}/curl-calls"; cat > /dev/null; exit 22; fi
+  // Counts its calls, records its arguments, stdin and environment, and
+  // prints the HTTP status in CURL_CODE (default 200), as -w '%{http_code}' does.
+  stub("curl", `echo x >> "${dir}/curl-calls"
 printf '%s' "\${TELEGRAM_BOT_TOKEN:-}" > "${dir}/curl-env-token"
-printf '%s\\n' "$@" > "${dir}/curl-args"; cat > "${dir}/curl-stdin"; exit 0`);
+printf '%s\\n' "$@" > "${dir}/curl-args"; cat > "${dir}/curl-stdin"
+printf '%s' "\${CURL_CODE:-200}"`);
 });
+
+function calls(): number {
+  return readFileSync(join(dir, "curl-calls"), "utf-8").trim().split("\n").length;
+}
 
 afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
 function runNotify(message: string, extraEnv: Record<string, string> = {}) {
+  rmSync(join(dir, "curl-calls"), { force: true });
   return Bun.spawnSync(["/bin/bash", NOTIFY, message], {
-    env: { PATH: `${stubs}:/usr/bin:/bin`, HOME: dir, ...extraEnv },
+    env: { PATH: `${stubs}:/usr/bin:/bin`, HOME: dir, CLAUDE_BOT_NOTIFY_DELAY: "0", ...extraEnv },
   });
 }
 
-test("notify.sh retries a failed send, reports it, and still exits 0", () => {
-  rmSync(join(dir, "curl-calls"), { force: true });
-  const result = runNotify("hello", { CURL_FAIL: "1", CLAUDE_BOT_NOTIFY_DELAY: "0" });
+test("notify.sh sends once when Telegram accepts the message", () => {
+  const result = runNotify("hello");
   expect(result.exitCode).toBe(0);
-  expect(readFileSync(join(dir, "curl-calls"), "utf-8").trim().split("\n")).toHaveLength(3);
-  expect(result.stderr.toString()).toContain("message not sent after 3 attempts");
-  expect(result.stderr.toString()).not.toContain(TOKEN);
+  expect(calls()).toBe(1);
+  expect(result.stderr.toString()).toBe("");
 });
+
+for (const code of ["000", "429", "503"]) {
+  test(`notify.sh retries HTTP ${code}, reports the failure, and still exits 0`, () => {
+    const result = runNotify("hello", { CURL_CODE: code });
+    expect(result.exitCode).toBe(0);
+    expect(calls()).toBe(3);
+    expect(result.stderr.toString()).toContain("message not sent after 3 attempts");
+    expect(result.stderr.toString()).not.toContain(TOKEN);
+  });
+}
+
+test("notify.sh does not retry a permanent rejection such as HTTP 401", () => {
+  const result = runNotify("hello", { CURL_CODE: "401" });
+  expect(result.exitCode).toBe(0);
+  expect(calls()).toBe(1);
+  expect(result.stderr.toString()).toContain("Telegram rejected the message: HTTP 401");
+});
+
+// Uses 503 so the script reaches the delay arithmetic; the default delay
+// then sleeps 2 s and 4 s, hence the longer test timeout.
+test("notify.sh falls back to the default delay when the override is not a whole number", () => {
+  const result = runNotify("hello", { CURL_CODE: "503", CLAUDE_BOT_NOTIFY_DELAY: "1.5" });
+  expect(result.exitCode).toBe(0);
+  expect(calls()).toBe(3);
+  expect(result.stderr.toString()).not.toContain("syntax error");
+  expect(result.stderr.toString()).toContain("message not sent after 3 attempts");
+}, 15_000);
 
 test("notify.sh keeps the token out of curl's environment even if the caller exported the name", () => {
   runNotify("hello", { TELEGRAM_BOT_TOKEN: "exported-by-caller" });
@@ -58,11 +89,6 @@ test("notify.sh does not print the token when run with bash -x", () => {
   });
   expect(result.exitCode).toBe(0);
   expect(result.stderr.toString()).not.toContain(TOKEN);
-});
-
-test("notify.sh passes --fail, so an HTTP error counts as a failed attempt", () => {
-  runNotify("hello");
-  expect(readFileSync(join(dir, "curl-args"), "utf-8").split("\n")).toContain("--fail");
 });
 
 test("notify.sh keeps the bot token out of curl's arguments", () => {
