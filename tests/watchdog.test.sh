@@ -250,12 +250,12 @@ chmod 755 "$T/home/.claude/logs"
 echo "normal output" > "$T/pane"
 touch "$T/bun_alive"
 run_watchdog
-assert_eq "logs folder is owner-only after a run" 700 "$(stat -f '%Lp' "$T/home/.claude/logs")"
+assert_eq "logs folder is owner-only after a run" "drwx------" "$(ls -ld "$T/home/.claude/logs" | cut -c1-10)"
 rm -rf "$T"
 
 # ── Login text quoted in chat above the status block is not an expiry ────────
 setup
-{ echo "user: what does 'Please run /login' mean?"; for _i in 1 2 3 4 5 6; do echo "assistant: line $_i"; done; status_block 20 200k; } > "$T/pane"
+{ echo "user: what does 'Please run /login' mean?"; for _i in $(seq 1 14); do echo "assistant: line $_i"; done; status_block 20 200k; } > "$T/pane"
 touch "$T/bun_alive"
 run_watchdog
 assert_eq "login text quoted higher up, plugin alive: no OAuth alert" 0 "$(count OAuth "$T/notify.log")"
@@ -267,6 +267,27 @@ echo "user: what does 'Please run /login' mean?" > "$T/pane"
 run_watchdog
 assert_eq "dead plugin with login text on screen: restarted" 1 "$(kills)"
 assert_eq "dead plugin with login text on screen: no OAuth alert" 0 "$(count OAuth "$T/notify.log")"
+rm -rf "$T"
+
+# ── The login error above the input box and a tall status block still alerts ─
+setup
+{
+    echo "assistant: earlier reply"
+    echo "  ⎿  API Error: Not logged in · Please run /login"
+    echo "✻ Thinking…"
+    echo "╭──────────────────────────────────────────╮"
+    echo "│ >                                        │"
+    echo "╰──────────────────────────────────────────╯"
+    printf '  Opus 5.5 │ [█████████░ 20%% / 200k] │ claude-telegram-bot\n'
+    printf 'current ████░░░░░░ 40%% ⟳ 2h10m\n'
+    printf 'weekly  ██░░░░░░░░ 20%% ⟳ 3d4h\n'
+    printf 'extra   █░░░░░░░░░ 10%%\n'
+    printf '  ⏵⏵ bypass permissions on (shift+tab to cycle)\n'
+} > "$T/pane"
+touch "$T/bun_alive"
+run_watchdog
+assert_eq "login error 10 lines up, plugin alive: OAuth alert" 1 "$(count OAuth "$T/notify.log")"
+assert_eq "login error 10 lines up, plugin alive: no restart" 0 "$(kills)"
 rm -rf "$T"
 
 # ── An expired login while the plugin runs: alert once, no restart ───────────

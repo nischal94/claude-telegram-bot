@@ -15,8 +15,14 @@ function log(logPath: string, message: string): void {
   appendFileSync(logPath, `${ts} ${message}\n`, "utf-8");
 }
 
+// "=" makes tmux match the session name exactly. Without it, tmux falls back
+// to a prefix match and could kill a session such as "claude-bot-old".
+export function killSessionArgs(): string[] {
+  return ["kill-session", "-t", `=${SESSION}`];
+}
+
 function killBot(logPath: string): void {
-  const result = spawnSync("tmux", ["kill-session", "-t", SESSION]);
+  const result = spawnSync("tmux", killSessionArgs());
   if (result.error) {
     log(logPath, `KILL ERROR: tmux not found or failed: ${result.error.message}`);
   } else if (result.status !== 0) {

@@ -78,10 +78,14 @@ find_bot_pids() {
 # The bottom of the pane: the status line block (context bar, usage lines)
 # and Claude Code's footer. Text above it is chat, which can quote anything.
 BOTTOM_LINES=8
+# The login error is a chat line above the input box, a spinner line and the
+# status block, so the login check reads a larger window. A missed expiry
+# leaves the bot down with no alert; a false one costs one de-duped message.
+LOGIN_LINES=16
 pane_bottom() {
     tmux capture-pane -t "$TARGET:" -p 2>/dev/null \
         | grep -v '^[[:space:]]*$' \
-        | tail -n "$BOTTOM_LINES"
+        | tail -n "${1:-$BOTTOM_LINES}"
 }
 
 # The context % from the status line's bar, e.g. "[████░░░░░░ 45% / 200k]"
@@ -134,10 +138,10 @@ check_healthy() {
 }
 
 PANE_TEXT=""
-PANE_BOTTOM=""
+PANE_LOGIN=""
 if tmux has-session -t "$TARGET" 2>/dev/null; then
     PANE_TEXT=$(tmux capture-pane -t "$TARGET:" -p 2>/dev/null || true)
-    PANE_BOTTOM=$(pane_bottom || true)
+    PANE_LOGIN=$(pane_bottom "$LOGIN_LINES" || true)
 fi
 
 # ── Step 1b: Detect OAuth expiry ─────────────────────────────────────────────
@@ -149,10 +153,10 @@ fi
 #   trying it would only restart the bot until the cap, hiding the alert.
 # - Checked only while the plugin runs: if the plugin is dead, login text on
 #   screen (perhaps quoted in chat) must not stop the restart.
-# - Only the bottom of the pane is read, so chat quoting the text higher up
-#   does not raise a false alert.
+# - Only the last $LOGIN_LINES lines are read, so chat quoting the text
+#   higher up does not raise a false alert.
 if check_healthy; then
-    if [[ -n "$PANE_BOTTOM" ]] && grep -qE 'Not logged in|Please run /login' <<< "$PANE_BOTTOM"; then
+    if [[ -n "$PANE_LOGIN" ]] && grep -qE 'Not logged in|Please run /login' <<< "$PANE_LOGIN"; then
         if [[ ! -f "$OAUTH_ALERT_STAMP" ]]; then
             log "OAuth session expired — bot is alive but unauthenticated. Alerting user."
             "$NOTIFY" "🔐 Bot OAuth session expired. Run: ~/bin/claude-bot-relogin.sh" || true

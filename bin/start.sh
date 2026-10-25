@@ -9,9 +9,8 @@
 # key from macOS Keychain. This script does not handle the Anthropic key
 # directly — keeps it out of argv and out of any temp file on disk.
 set -euo pipefail
-# Files this script creates are owner-only, and so are files from a tmux
-# server it starts. A tmux server that is already running keeps its own
-# umask, which is why the bot log is also set to 0600 below.
+# Files this script creates are owner-only. The tmux server is started with
+# umask 022 (see below), so the bot log is made private by mode, not umask.
 umask 077
 
 EXPERIMENT_DIR="$HOME/projects/claude-telegram-bot"
@@ -46,9 +45,15 @@ if tmux kill-session -t "$TARGET" 2>/dev/null; then
 fi
 
 BOT_PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-tmux new-session -d -s "$SESSION" \
-    -e "PATH=$BOT_PATH" \
-    "bash '$EXPERIMENT_DIR/deploy/launch_bot.sh'"
+# If no tmux server is running, this call starts one, and every later session
+# on the default socket inherits its umask, including the user's own. Start it
+# with the usual 022 so the umask above does not leak into those sessions.
+(
+    umask 022
+    tmux new-session -d -s "$SESSION" \
+        -e "PATH=$BOT_PATH" \
+        "bash '$EXPERIMENT_DIR/deploy/launch_bot.sh'"
+)
 
 if [[ "$LOG_PRIVATE" == 1 ]]; then
     tmux pipe-pane -t "$TARGET:" -o "cat >> '$BOT_LOG'"
