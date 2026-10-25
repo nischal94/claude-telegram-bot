@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { makeTestDir } from "../test-tmp";
 import { join } from "path";
@@ -244,6 +244,23 @@ describe("CronRegistry rolls back a change whose save failed", () => {
     } finally {
       chmodSync(tmpDir, 0o700);
     }
+  });
+});
+
+describe("CronRegistry file watcher", () => {
+  // On Linux, the watcher can report an error for the temp file of an atomic
+  // save that was already renamed away. That must not crash the engine.
+  test("a watcher error is logged and the registry keeps working", () => {
+    const watcher = (registry as unknown as { watcher: { emit(e: string, err: Error): boolean } }).watcher;
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(() => watcher.emit("error", new Error("ENOENT: no such file or directory, watch 'x.tmp'"))).not.toThrow();
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+    registry.create({ id: "after-error", schedule: "0 9 * * 1", type: "reminder", message: "hi" });
+    expect(registry.get("after-error")).toBeDefined();
   });
 });
 

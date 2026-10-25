@@ -1,10 +1,11 @@
 import { randomBytes, timingSafeEqual } from "crypto";
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync } from "fs";
 import { join } from "path";
 import { loadConfig, type Config } from "./config";
 import { ensureOwnerOnlyDir, writeOwnerOnly } from "./fsutil";
 import { MemoryStore } from "./memory/store";
 import { writeSnapshot } from "./memory/snapshot";
+import { importSeed } from "./memory/seed";
 import { createMemoryRouter } from "./memory/handler";
 import { CronRegistry } from "./cron/registry";
 import { CronScheduler } from "./cron/scheduler";
@@ -131,20 +132,7 @@ export function startCompanion() {
   const store = new MemoryStore(join(config.companionDir, "memory.db"));
 
   // Import seed file on first run
-  const seedPath = join(config.companionDir, "memories-seed.json");
-  const importedFlagPath = join(config.companionDir, ".seed-imported");
-  if (existsSync(seedPath) && !existsSync(importedFlagPath)) {
-    try {
-      const entries = JSON.parse(readFileSync(seedPath, "utf-8")) as { type: string; key: string; value: string }[];
-      for (const e of entries) {
-        store.add({ type: e.type as any, key: e.key, value: e.value, source: "explicit" });
-      }
-      writeFileSync(importedFlagPath, new Date().toISOString(), "utf-8");
-      console.log(`[engine] imported ${entries.length} seed memories`);
-    } catch (e) {
-      console.error("[engine] failed to import seed:", e);
-    }
-  }
+  importSeed(store, join(config.companionDir, "memories-seed.json"), join(config.companionDir, ".seed-imported"));
 
   const snapshotPath = join(config.companionDir, "memory-snapshot.md");
   writeSnapshot(snapshotPath, store.getAll());

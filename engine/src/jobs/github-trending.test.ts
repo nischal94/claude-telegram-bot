@@ -1,5 +1,10 @@
 import { test, expect, mock, beforeEach, afterEach } from "bun:test";
-import { buildTextDigest, cardLaunchOptions, deliverTextDigest, fetchTrending } from "./github-trending";
+
+// Imported at run time, not with a static import: on the Linux CI runner, Bun
+// 1.3.11 stalled until the job timeout while loading this file's static
+// imports (3 of 4 runs), and loading them this way passed 3 of 3. The cause
+// is not yet known; see the CI stall follow-up in the audit notes.
+const { buildTextDigest, cardLaunchOptions, deliverTextDigest, fetchTrending } = await import("./github-trending");
 
 test("the card browser talks over a pipe and opens no TCP debugging port", () => {
   const opts = cardLaunchOptions("/path/to/chrome-headless-shell");
@@ -29,14 +34,17 @@ const FIXTURE_HTML = `
 `;
 
 let fetchMock: ReturnType<typeof mock>;
+const realFetch = globalThis.fetch;
 
 beforeEach(() => {
   fetchMock = mock(async () => new Response(FIXTURE_HTML, { status: 200 }));
   globalThis.fetch = fetchMock as any;
 });
 
+// Put the real fetch back: test files share one process, so a leaked mock
+// would answer every later file's requests.
 afterEach(() => {
-  fetchMock.mockRestore?.();
+  globalThis.fetch = realFetch;
 });
 
 test("fetchTrending returns parsed repos", async () => {

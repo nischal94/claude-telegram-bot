@@ -5,6 +5,12 @@ import { dirname } from "path";
 export type MemoryType = "preference" | "fact" | "learned";
 export type MemorySource = "explicit" | "inferred";
 
+export const MEMORY_TYPES: ReadonlySet<string> = new Set<MemoryType>(["preference", "fact", "learned"]);
+export const MAX_KEY_LENGTH = 100;
+// Key plus value fits the smallest limit (learned, 1000), so one entry of
+// the maximum size always fits in an empty store.
+export const MAX_VALUE_LENGTH = 900;
+
 export interface MemoryEntry {
   id?: number;
   type: MemoryType;
@@ -28,15 +34,21 @@ const LIMITS: Record<MemoryType, number> = {
 const INJECTION_PATTERNS = [
   /ignore previous instructions/i,
   /you are now/i,
-  /[\u200b-\u200f\u202a-\u202e]/,
+  // Invisible characters: zero-width and direction marks, embeddings and
+  // overrides, word joiner and invisible operators, isolates, byte order mark.
+  /[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/,
   /curl.*\$|wget.*\$/i,
   /\.env/i,
 ];
 
+// A write the store refuses on purpose. Its message is safe to show the
+// caller; any other error may carry SQLite or file details and is not.
+export class MemoryRejected extends Error {}
+
 function checkInjection(value: string): void {
   for (const pattern of INJECTION_PATTERNS) {
     if (pattern.test(value)) {
-      throw new Error(`blocked: injection pattern detected`);
+      throw new MemoryRejected(`blocked: injection pattern detected`);
     }
   }
 }
@@ -66,6 +78,13 @@ export class MemoryStore {
         updated DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    // One row per completed one-time import, such as the seed file.
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS imports (
+        name TEXT PRIMARY KEY,
+        at   DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
     // transcript table for future cross-session context (not yet used by any component)
     this.db.run(`
       CREATE VIRTUAL TABLE IF NOT EXISTS transcript USING fts5(
@@ -75,27 +94,60 @@ export class MemoryStore {
   }
 
   add(entry: MemoryEntry): void {
-    checkInjection(entry.value);
-    checkInjection(entry.key);
-    const doAdd = this.db.transaction(() => {
-      this.db.run(
-        "INSERT INTO memories (type, key, value, source) VALUES (?, ?, ?, ?)",
-        [entry.type, entry.key, entry.value, entry.source]
-      );
-      this.enforceLimit(entry.type);
-    });
-    doAdd();
+    this.db.transaction(() => {
+      this.insert(entry, []);
+    })();
   }
 
-  replace(entry: { type: MemoryType; key: string; value: string }): void {
+  // Inserts one entry and applies the limit. The new row, and every row in
+  // `protect`, must survive the limit, or the caller's transaction is rolled
+  // back. Returns the new row's id.
+  private insert(entry: MemoryEntry, protect: number[]): number {
+    checkInjection(entry.value);
+    checkInjection(entry.key);
+    const result = this.db.run(
+      "INSERT INTO memories (type, key, value, source) VALUES (?, ?, ?, ?)",
+      [entry.type, entry.key, entry.value, entry.source]
+    );
+    const id = Number(result.lastInsertRowid);
+    this.enforceLimit(entry.type, entry.source, [...protect, id]);
+    return id;
+  }
+
+  // Sets the value and the source: a replace that does not say the user asked
+  // for it makes the entry inferred, so it leaves the system prompt.
+  replace(entry: { type: MemoryType; key: string; value: string; source: MemorySource }): void {
     checkInjection(entry.key);
     checkInjection(entry.value);
-    const result = this.db.run(
-      "UPDATE memories SET value = ?, updated = CURRENT_TIMESTAMP WHERE type = ? AND key = ?",
-      [entry.value, entry.type, entry.key]
-    );
-    if (result.changes === 0) throw new Error(`no entry found with key "${entry.key}" of type "${entry.type}"`);
-    this.enforceLimit(entry.type);
+    this.db.transaction(() => {
+      const result = this.db.run(
+        "UPDATE memories SET value = ?, source = ?, updated = CURRENT_TIMESTAMP WHERE type = ? AND key = ?",
+        [entry.value, entry.source, entry.type, entry.key]
+      );
+      if (result.changes === 0) throw new MemoryRejected(`no entry found with key "${entry.key}" of type "${entry.type}"`);
+      // A replace keeps the row's old position, so going over the limit would
+      // drop some other saved row, not this one. Protect every row of the
+      // type and source it now belongs to: a replace never deletes anything.
+      const bucket = (this.db
+        .query("SELECT id FROM memories WHERE type = ? AND source = ?")
+        .all(entry.type, entry.source) as { id: number }[]).map((r) => r.id);
+      this.enforceLimit(entry.type, entry.source, bucket);
+    })();
+  }
+
+  // Imports entries once under a name. All or nothing: if any entry is
+  // rejected, or the limit would drop any entry of this import, none are
+  // saved and the import is not recorded. The record is written in the same
+  // transaction, so a crash cannot import twice.
+  // Returns false if an import with this name already ran.
+  importOnce(name: string, entries: MemoryEntry[]): boolean {
+    return this.db.transaction(() => {
+      if (this.db.query("SELECT 1 FROM imports WHERE name = ?").get(name)) return false;
+      const written: number[] = [];
+      for (const entry of entries) written.push(this.insert(entry, written));
+      this.db.run("INSERT INTO imports (name) VALUES (?)", [name]);
+      return true;
+    })();
   }
 
   remove(entry: { type: MemoryType; key: string }): void {
@@ -115,25 +167,29 @@ export class MemoryStore {
     this.db.close();
   }
 
-  private enforceLimit(type: MemoryType): void {
+  // Each type and source has its own size limit, so inferred entries never
+  // push out explicit ones. For preference: keep the newest, drop the oldest.
+  // For fact and learned: keep the oldest, drop the newest. If a row the
+  // caller just wrote would be dropped, the write is rejected instead, so a
+  // save never reports success and then disappears. Call inside a transaction.
+  private enforceLimit(type: MemoryType, source: MemorySource, written: number[]): void {
     const limit = LIMITS[type];
-    // For preference: keep most recently added (newest first), drop oldest. For fact/learned: keep oldest, drop newest.
     const order = type === "preference" ? "DESC" : "ASC";
     const rows = this.db
-      .query(`SELECT id, key, value FROM memories WHERE type = ? ORDER BY id ${order}`)
-      .all(type) as { id: number; key: string; value: string }[];
+      .query(`SELECT id, key, value FROM memories WHERE type = ? AND source = ? ORDER BY id ${order}`)
+      .all(type, source) as { id: number; key: string; value: string }[];
 
     let total = 0;
-    const toKeep: number[] = [];
+    const toDrop: number[] = [];
     for (const row of rows) {
       total += row.key.length + row.value.length;
-      if (total <= limit) toKeep.push(row.id);
+      if (total > limit) toDrop.push(row.id);
     }
-    if (toKeep.length < rows.length) {
-      const toDrop = rows.filter((r) => !toKeep.includes(r.id)).map((r) => r.id);
-      for (const id of toDrop) {
-        this.db.run("DELETE FROM memories WHERE id = ?", [id]);
-      }
+    if (toDrop.some((id) => written.includes(id))) {
+      throw new MemoryRejected(`${type} memory is over its ${limit}-character limit: remove an entry first`);
+    }
+    for (const id of toDrop) {
+      this.db.run("DELETE FROM memories WHERE id = ?", [id]);
     }
   }
 }
