@@ -1,23 +1,9 @@
 import { test, expect, mock, beforeEach, afterEach } from "bun:test";
 
-// TEMPORARY CI probe: engine-tests has stalled in CI while loading this file.
-// Load each dependency in turn and log it; the guard reports an async stall.
-const probeGuard = setTimeout(() => {
-  console.error("[trending-probe] import stalled for 30s; exiting");
-  process.exit(1);
-}, 30_000);
-const probe = async (name: string, load: () => Promise<unknown>) => {
-  console.log(`[trending-probe] loading ${name}`);
-  const started = performance.now();
-  await load();
-  console.log(`[trending-probe] loaded ${name} in ${Math.round(performance.now() - started)}ms`);
-};
-await probe("node-html-parser", () => import("node-html-parser"));
-await probe("../telegram", () => import("../telegram"));
-await probe("../config", () => import("../config"));
-await probe("./github-trending", () => import("./github-trending"));
-clearTimeout(probeGuard);
-
+// Imported at run time, not with a static import: on the Linux CI runner, Bun
+// 1.3.11 stalled until the job timeout while loading this file's static
+// imports (3 of 4 runs), and loading them this way passed 3 of 3. The cause
+// is not yet known; see the CI stall follow-up in the audit notes.
 const { buildTextDigest, cardLaunchOptions, deliverTextDigest, fetchTrending } = await import("./github-trending");
 
 test("the card browser talks over a pipe and opens no TCP debugging port", () => {
