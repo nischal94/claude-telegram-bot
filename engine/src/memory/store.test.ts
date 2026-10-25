@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { rmSync } from "fs";
+import { chmodSync, existsSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import { MemoryStore } from "./store";
 import { makeTestDir } from "../test-tmp";
@@ -15,6 +15,28 @@ beforeEach(() => {
 afterEach(() => {
   store.close();
   rmSync(tmpDir, { recursive: true });
+});
+
+describe("MemoryStore file permissions", () => {
+  test("the database and its journal files are readable only by the owner", () => {
+    store.add({ type: "fact", key: "k", value: "v", source: "explicit" });
+    const db = join(tmpDir, "memory.db");
+    expect(statSync(db).mode & 0o777).toBe(0o600);
+    for (const suffix of ["-wal", "-shm"]) {
+      if (existsSync(db + suffix)) expect(statSync(db + suffix).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  test("tightens an existing world-readable database and journal files", () => {
+    store.close();
+    const db = join(tmpDir, "memory.db");
+    chmodSync(db, 0o644);
+    writeFileSync(`${db}-wal`, "");
+    chmodSync(`${db}-wal`, 0o644);
+    store = new MemoryStore(db);
+    expect(statSync(db).mode & 0o777).toBe(0o600);
+    expect(statSync(`${db}-wal`).mode & 0o777).toBe(0o600);
+  });
 });
 
 describe("MemoryStore", () => {

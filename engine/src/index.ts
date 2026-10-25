@@ -2,7 +2,7 @@ import { randomBytes, timingSafeEqual } from "crypto";
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { loadConfig, type Config } from "./config";
-import { writeOwnerOnly } from "./fsutil";
+import { ensureOwnerOnlyDir, writeOwnerOnly } from "./fsutil";
 import { MemoryStore } from "./memory/store";
 import { writeSnapshot } from "./memory/snapshot";
 import { createMemoryRouter } from "./memory/handler";
@@ -121,9 +121,10 @@ export function buildFetchHandler(
 export function startCompanion() {
   const config = loadConfig();
 
-  // Ensure directories exist
-  mkdirSync(config.companionDir, { recursive: true });
-  mkdirSync(config.logsDir, { recursive: true });
+  // Ensure directories exist. The engine folder holds memory, jobs and the
+  // API token, so it is owner-only even if it already existed.
+  ensureOwnerOnlyDir(config.companionDir);
+  mkdirSync(config.logsDir, { recursive: true, mode: 0o700 });
 
   // Memory
   const store = new MemoryStore(join(config.companionDir, "memory.db"));
