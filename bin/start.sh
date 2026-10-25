@@ -25,13 +25,15 @@ mkdir -p "$LOG_DIR"
 # The log holds the bot's whole screen, chat included. Logs created before
 # the umask above keep their old modes, so make the folder owner-only (which
 # keeps every log in it private) and the bot log 0600. Each step runs on its
-# own, so one failure does not skip the other. A failure is reported but does
-# not stop the bot from starting.
+# own, so one failure does not skip the other. If the bot log cannot be made
+# 0600, the bot still starts but its screen is not written to the log.
 if ! chmod 700 "$LOG_DIR"; then
     echo "[claude-bot-start] could not make $LOG_DIR owner-only" >&2
 fi
+LOG_PRIVATE=1
 if ! { touch "$BOT_LOG" && chmod 600 "$BOT_LOG"; }; then
-    echo "[claude-bot-start] could not make $BOT_LOG owner-only" >&2
+    echo "[claude-bot-start] could not make $BOT_LOG owner-only; bot screen will not be logged" >&2
+    LOG_PRIVATE=0
 fi
 
 if [[ ! -x "$EXPERIMENT_DIR/deploy/launch_bot.sh" ]]; then
@@ -48,7 +50,9 @@ tmux new-session -d -s "$SESSION" \
     -e "PATH=$BOT_PATH" \
     "bash '$EXPERIMENT_DIR/deploy/launch_bot.sh'"
 
-tmux pipe-pane -t "$TARGET:" -o "cat >> '$BOT_LOG'"
+if [[ "$LOG_PRIVATE" == 1 ]]; then
+    tmux pipe-pane -t "$TARGET:" -o "cat >> '$BOT_LOG'"
+fi
 
 "$HOME/bin/claude-bot-notify.sh" "✅ Bot started" || true
 
