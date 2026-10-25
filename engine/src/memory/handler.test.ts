@@ -42,6 +42,26 @@ describe("memory API source", () => {
     await post({ op: "add", type: "fact", key: "gym", value: "6am", source: "explicit" });
     expect(store.getAll().facts[0].source).toBe("explicit");
   });
+
+  test("a replace without a source turns an explicit entry inferred", async () => {
+    await post({ op: "add", type: "fact", key: "gym", value: "6am", source: "explicit" });
+    const res = await post({ op: "replace", type: "fact", key: "gym", value: "new text" });
+    expect(res.status).toBe(200);
+    expect(store.getAll().facts[0]).toMatchObject({ value: "new text", source: "inferred" });
+  });
+
+  test("a replace with source explicit keeps the entry explicit", async () => {
+    await post({ op: "add", type: "fact", key: "gym", value: "6am" });
+    await post({ op: "replace", type: "fact", key: "gym", value: "7am", source: "explicit" });
+    expect(store.getAll().facts[0]).toMatchObject({ value: "7am", source: "explicit" });
+  });
+
+  test("an add the limit would drop returns 422, not ok", async () => {
+    await post({ op: "add", type: "learned", key: "a", value: "x".repeat(899), source: "explicit" });
+    const res = await post({ op: "add", type: "learned", key: "b", value: "y".repeat(200), source: "explicit" });
+    expect(res.status).toBe(422);
+    expect(store.getAll().learned).toHaveLength(1);
+  });
 });
 
 describe("memory API input checks", () => {
@@ -52,7 +72,8 @@ describe("memory API input checks", () => {
     ["an empty key", { op: "add", type: "fact", key: "", value: "v" }],
     ["a number as value", { op: "add", type: "fact", key: "k", value: 5 }],
     ["a key over 100 characters", { op: "add", type: "fact", key: "k".repeat(101), value: "v" }],
-    ["a value over 1000 characters", { op: "add", type: "fact", key: "k", value: "v".repeat(1001) }],
+    ["a value over 900 characters", { op: "add", type: "fact", key: "k", value: "v".repeat(901) }],
+    ["a replace with an unknown source", { op: "replace", type: "fact", key: "k", value: "v", source: "admin" }],
     ["a replace without a value", { op: "replace", type: "fact", key: "k" }],
     ["a remove with an unknown type", { op: "remove", type: "secret", key: "k" }],
     ["an unknown op", { op: "drop", type: "fact", key: "k" }],

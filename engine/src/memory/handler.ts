@@ -5,7 +5,7 @@ import {
 import { writeSnapshot } from "./snapshot";
 
 interface AddBody { op: "add"; type: MemoryType; key: string; value: string; source: MemorySource }
-interface ReplaceBody { op: "replace"; type: MemoryType; key: string; value: string }
+interface ReplaceBody { op: "replace"; type: MemoryType; key: string; value: string; source: MemorySource }
 interface RemoveBody { op: "remove"; type: MemoryType; key: string }
 type MemoryBody = AddBody | ReplaceBody | RemoveBody;
 
@@ -25,12 +25,11 @@ function parseBody(raw: unknown): MemoryBody | string {
   const type = b.type as MemoryType;
   if (b.op === "remove") return { op: "remove", type, key: b.key };
   if (!isText(b.value, MAX_VALUE_LENGTH)) return `value must be a string of 1 to ${MAX_VALUE_LENGTH} characters`;
-  if (b.op === "replace") return { op: "replace", type, key: b.key, value: b.value };
   // A write that does not say the user asked for it counts as inferred, so it
   // stays out of the system prompt (see snapshot.ts).
   const source = b.source ?? "inferred";
   if (typeof source !== "string" || !SOURCES.has(source)) return "source must be explicit or inferred";
-  return { op: "add", type, key: b.key, value: b.value, source: source as MemorySource };
+  return { op: b.op, type, key: b.key, value: b.value, source: source as MemorySource };
 }
 
 export function createMemoryRouter(store: MemoryStore, snapshotPath: string) {
@@ -49,7 +48,7 @@ export function createMemoryRouter(store: MemoryStore, snapshotPath: string) {
         if (body.op === "add") {
           store.add({ type: body.type, key: body.key, value: body.value, source: body.source });
         } else if (body.op === "replace") {
-          store.replace({ type: body.type, key: body.key, value: body.value });
+          store.replace({ type: body.type, key: body.key, value: body.value, source: body.source });
         } else {
           store.remove({ type: body.type, key: body.key });
         }

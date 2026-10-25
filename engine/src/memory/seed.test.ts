@@ -27,9 +27,15 @@ function count(): number {
   return all.preferences.length + all.facts.length + all.learned.length;
 }
 
-function quietly<T>(fn: () => T): T {
+// Runs fn with console.error silenced and returns what it logged.
+function quietly(fn: () => void): string {
   const spy = spyOn(console, "error").mockImplementation(() => {});
-  try { return fn(); } finally { spy.mockRestore(); }
+  try {
+    fn();
+    return spy.mock.calls.map((c) => c.join(" ")).join("\n");
+  } finally {
+    spy.mockRestore();
+  }
 }
 
 test("imports a valid seed once and marks it imported", () => {
@@ -61,15 +67,28 @@ test("a seed with one rejected entry imports nothing and is retried next start",
 });
 
 test.each([
-  ["invalid JSON", "{not json"],
-  ["an object instead of a list", JSON.stringify({ type: "fact" })],
-  ["an entry with an unknown type", JSON.stringify([{ type: "secret", key: "k", value: "v" }])],
-  ["an entry with a number as value", JSON.stringify([{ type: "fact", key: "k", value: 5 }])],
-])("a seed with %s imports nothing", (_name, content) => {
+  ["invalid JSON", "{not json", /JSON/],
+  ["an object instead of a list", JSON.stringify({ type: "fact" }), /list of entries/],
+  ["an entry with an unknown type", JSON.stringify([{ type: "secret", key: "k", value: "v" }]), /entry type/],
+  ["an entry with a number as value", JSON.stringify([{ type: "fact", key: "k", value: 5 }]), /entry value/],
+  ["entries over the type's limit", JSON.stringify([
+    { type: "learned", key: "a", value: "x".repeat(800) },
+    { type: "learned", key: "b", value: "y".repeat(800) },
+  ]), /limit/],
+])("a seed with %s imports nothing and logs why", (_name, content, reason) => {
   writeFileSync(seedPath, content);
-  quietly(() => importSeed(store, seedPath, flagPath));
+  const logged = quietly(() => importSeed(store, seedPath, flagPath));
+  expect(logged).toMatch(reason);
   expect(count()).toBe(0);
   expect(existsSync(flagPath)).toBe(false);
+});
+
+test("if the flag file cannot be written, the seed is still not imported twice", () => {
+  writeFileSync(seedPath, JSON.stringify([{ type: "fact", key: "gym", value: "6am" }]));
+  const unwritableFlag = join(dir, "missing-dir", ".seed-imported");
+  quietly(() => importSeed(store, seedPath, unwritableFlag));
+  quietly(() => importSeed(store, seedPath, unwritableFlag));
+  expect(count()).toBe(1);
 });
 
 test("does nothing without a seed file", () => {

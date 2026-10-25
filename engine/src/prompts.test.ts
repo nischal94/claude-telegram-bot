@@ -10,9 +10,9 @@ const INSTRUCTIONS = readFileSync(
 test("the memory instructions save only what the user asks for", () => {
   expect(INSTRUCTIONS).not.toMatch(/proactiv/i);
   expect(INSTRUCTIONS).toContain('Always send "source": "explicit"');
-  // Every example memory body names the source explicit, never inferred.
-  const bodies = INSTRUCTIONS.match(/\{"op": "add"[^\n]*\}/g) ?? [];
-  expect(bodies.length).toBeGreaterThan(0);
+  // Every example add or replace body names the source explicit.
+  const bodies = INSTRUCTIONS.match(/\{"op": "(add|replace)"[^\n]*\}/g) ?? [];
+  expect(bodies.length).toBeGreaterThanOrEqual(2);
   for (const body of bodies) expect(body).toContain('"source": "explicit"');
 });
 

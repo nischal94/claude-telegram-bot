@@ -9,21 +9,30 @@ function toEntry(raw: unknown): MemoryEntry {
   return { type: e.type as MemoryEntry["type"], key: e.key, value: e.value, source: "explicit" };
 }
 
+const SEED_IMPORT = "memories-seed";
+
 // Imports memories-seed.json once. The seed is the owner's own file, so its
-// entries count as explicit. The import runs in one transaction and the flag
-// is written only after it, so a failure leaves nothing behind and the seed is
-// tried again at the next start instead of being imported twice.
+// entries count as explicit. The store imports all entries or none, and
+// records the import in the same transaction, so a failure leaves nothing
+// behind and the seed is never imported twice. The flag file is written for
+// older engines, which check only the file.
 export function importSeed(store: MemoryStore, seedPath: string, flagPath: string): void {
   if (!existsSync(seedPath) || existsSync(flagPath)) return;
   try {
     const parsed: unknown = JSON.parse(readFileSync(seedPath, "utf-8"));
     if (!Array.isArray(parsed)) throw new Error("expected a list of entries");
     const entries = parsed.map(toEntry);
-    store.importEntries(entries);
-    writeFileSync(flagPath, new Date().toISOString(), "utf-8");
+    if (!store.importOnce(SEED_IMPORT, entries)) return;
     console.log(`[engine] imported ${entries.length} seed memories`);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`[engine] Failed to import seed: ${msg}. Context: path=${seedPath}`);
+    return;
+  }
+  try {
+    writeFileSync(flagPath, new Date().toISOString(), "utf-8");
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[engine] Failed to write the seed flag: ${msg}. Context: path=${flagPath}`);
   }
 }
