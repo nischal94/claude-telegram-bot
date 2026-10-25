@@ -1,5 +1,24 @@
 import { test, expect, mock, beforeEach, afterEach } from "bun:test";
-import { buildTextDigest, cardLaunchOptions, deliverTextDigest, fetchTrending } from "./github-trending";
+
+// TEMPORARY CI probe: engine-tests has stalled in CI while loading this file.
+// Load each dependency in turn and log it; the guard reports an async stall.
+const probeGuard = setTimeout(() => {
+  console.error("[trending-probe] import stalled for 30s; exiting");
+  process.exit(1);
+}, 30_000);
+const probe = async (name: string, load: () => Promise<unknown>) => {
+  console.log(`[trending-probe] loading ${name}`);
+  const started = performance.now();
+  await load();
+  console.log(`[trending-probe] loaded ${name} in ${Math.round(performance.now() - started)}ms`);
+};
+await probe("node-html-parser", () => import("node-html-parser"));
+await probe("../telegram", () => import("../telegram"));
+await probe("../config", () => import("../config"));
+await probe("./github-trending", () => import("./github-trending"));
+clearTimeout(probeGuard);
+
+const { buildTextDigest, cardLaunchOptions, deliverTextDigest, fetchTrending } = await import("./github-trending");
 
 test("the card browser talks over a pipe and opens no TCP debugging port", () => {
   const opts = cardLaunchOptions("/path/to/chrome-headless-shell");
@@ -29,14 +48,17 @@ const FIXTURE_HTML = `
 `;
 
 let fetchMock: ReturnType<typeof mock>;
+const realFetch = globalThis.fetch;
 
 beforeEach(() => {
   fetchMock = mock(async () => new Response(FIXTURE_HTML, { status: 200 }));
   globalThis.fetch = fetchMock as any;
 });
 
+// Put the real fetch back: test files share one process, so a leaked mock
+// would answer every later file's requests.
 afterEach(() => {
-  fetchMock.mockRestore?.();
+  globalThis.fetch = realFetch;
 });
 
 test("fetchTrending returns parsed repos", async () => {
