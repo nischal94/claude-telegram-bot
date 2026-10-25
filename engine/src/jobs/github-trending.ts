@@ -195,8 +195,45 @@ export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
     try { unlinkSync(tmpPath); } catch (e) { console.warn("[github-trending] failed to clean up temp PNG:", e); }
   }
 
-  // Text fallback
-  const now = new Date();
+  await deliverTextDigest(telegram, repos, period, renderError, new Date());
+  console.log(`[github-trending] delivered ${period} digest (text fallback) with ${repos.length} repos`);
+}
+
+export async function deliverTextDigest(
+  telegram: Pick<TelegramClient, "sendMessageWithRetry">,
+  repos: TrendingRepo[],
+  period: "weekly" | "monthly",
+  renderError: string | null,
+  now: Date,
+): Promise<void> {
+  await telegram.sendMessageWithRetry(buildTextDigest(repos, period, renderError, now), { parseMode: "HTML" });
+}
+
+// HTML is not cut by the Telegram client, so the digest bounds its own
+// length: 10 repos with these limits stay well under 4096 characters.
+const MAX_DESCRIPTION_CHARS = 200;
+const MAX_ERROR_CHARS = 300;
+
+// Cuts without splitting a character that takes two UTF-16 code units: half
+// of one is invalid text that Telegram can reject.
+function clip(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let end = max - 1;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end--;
+  return text.slice(0, end) + "…";
+}
+
+// The text fallback, as Telegram HTML. Every scraped field and the error
+// text are escaped, so a repo name or description cannot add formatting
+// or links. (Legacy Markdown cannot escape characters inside bold or
+// italic, so a name like some_repo used to break the whole message.)
+export function buildTextDigest(
+  repos: TrendingRepo[],
+  period: "weekly" | "monthly",
+  renderError: string | null,
+  now: Date,
+): string {
   let dateRange: string;
   if (period === "weekly") {
     const weekAgo = new Date(now);
@@ -208,21 +245,19 @@ export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
   }
 
   const header = period === "weekly"
-    ? `📈 *Fastest Growing GitHub Repos This Week*`
-    : `📈 *Fastest Growing GitHub Repos Last Month*`;
+    ? `📈 <b>Fastest Growing GitHub Repos This Week</b>`
+    : `📈 <b>Fastest Growing GitHub Repos Last Month</b>`;
 
   const repoLines = repos.map(r => {
-    const stars = r.starsGained !== "?" ? `+${r.starsGained} ⭐` : "⭐";
-    const desc = r.description || "No description";
-    return `*${String(r.rank).padStart(2, "0")}. ${r.owner}/${r.name}* — ${stars}\n_${desc}_`;
+    const stars = r.starsGained !== "?" ? `+${esc(r.starsGained)} ⭐` : "⭐";
+    const desc = clip(r.description || "No description", MAX_DESCRIPTION_CHARS);
+    return `<b>${String(r.rank).padStart(2, "0")}. ${esc(r.owner)}/${esc(r.name)}</b> — ${stars}\n<i>${esc(desc)}</i>`;
   });
 
   const alert = renderError
-    ? [`⚠️ _Image render failed, sent as text. Reason: ${renderError}_`]
+    ? [`⚠️ <i>Image render failed, sent as text. Reason: ${esc(clip(renderError, MAX_ERROR_CHARS))}</i>`]
     : [];
-  const message = [header, `_${dateRange}_`, "", ...repoLines, ...alert].join("\n\n");
-  await telegram.sendMessageWithRetry(message);
-  console.log(`[github-trending] delivered ${period} digest (text fallback) with ${repos.length} repos`);
+  return [header, `<i>${esc(dateRange)}</i>`, "", ...repoLines, ...alert].join("\n\n");
 }
 
 // Entry point when run as a script: bun run github-trending.ts [weekly|monthly]

@@ -1,5 +1,5 @@
 import { test, expect, mock, beforeEach, afterEach } from "bun:test";
-import { fetchTrending } from "./github-trending";
+import { buildTextDigest, deliverTextDigest, fetchTrending } from "./github-trending";
 
 // Minimal fixture HTML that mirrors GitHub's trending page structure
 const FIXTURE_HTML = `
@@ -44,4 +44,63 @@ test("fetchTrending requests correct URL for monthly", async () => {
     "https://github.com/trending?since=monthly",
     expect.any(Object)
   );
+});
+
+const NOW = new Date(2026, 9, 25);
+
+test("the text digest escapes scraped fields as HTML", () => {
+  const text = buildTextDigest([{
+    rank: 1, owner: "some_org", name: "a<b>&c", description: "<script>alert(1)</script> & *stars*", starsGained: "1,234",
+  }], "weekly", null, NOW);
+  expect(text).toContain("some_org/a&lt;b&gt;&amp;c");
+  expect(text).toContain("&lt;script&gt;alert(1)&lt;/script&gt; &amp; *stars*");
+  expect(text).not.toContain("<script>");
+});
+
+test("the text digest keeps its own formatting as HTML tags", () => {
+  const text = buildTextDigest([{ rank: 2, owner: "o", name: "n", description: "", starsGained: "?" }], "monthly", null, NOW);
+  expect(text).toContain("<b>Fastest Growing GitHub Repos Last Month</b>");
+  expect(text).toContain("<b>02. o/n</b> — ⭐");
+  expect(text).toContain("<i>No description</i>");
+});
+
+test("the text digest is sent in HTML mode", async () => {
+  const calls: [string, unknown][] = [];
+  const telegram = { sendMessageWithRetry: async (text: string, options?: unknown) => { calls.push([text, options]); } };
+  await deliverTextDigest(telegram as any, [], "weekly", null, NOW);
+  expect(calls).toHaveLength(1);
+  expect(calls[0][1]).toEqual({ parseMode: "HTML" });
+});
+
+test("the text digest cuts long descriptions so the HTML stays under Telegram's limit", () => {
+  // GitHub's limits: owner names up to 39 characters, repo names up to 100.
+  const repos = Array.from({ length: 10 }, (_, i) => ({
+    rank: i + 1, owner: "o".repeat(39), name: "n".repeat(100), description: "<".repeat(400), starsGained: "99,999",
+  }));
+  const text = buildTextDigest(repos, "weekly", "e".repeat(1000), NOW);
+  // Telegram counts the limit after parsing: tags vanish, entities count once.
+  // The digest uses only these four tags, so remove them exactly.
+  const rendered = ["<b>", "</b>", "<i>", "</i>"]
+    .reduce((t, tag) => t.split(tag).join(""), text)
+    .replace(/&(lt|gt|amp|quot);/g, "x");
+  expect(rendered.length).toBeLessThanOrEqual(4096);
+  expect(text).toContain("…</i>");
+  // Escaping happens after the cut, so no entity is split.
+  expect(text).not.toMatch(/&[a-z]*…/);
+});
+
+test("cutting a description or the error never leaves half a character", () => {
+  const loneHighSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/;
+  // 101 emoji are 202 code units: the description cut falls mid-emoji.
+  const text = buildTextDigest(
+    [{ rank: 1, owner: "o", name: "n", description: "😀".repeat(101), starsGained: "1" }],
+    "weekly", "😀".repeat(151), NOW,
+  );
+  expect(text).toContain("…</i>");
+  expect(loneHighSurrogate.test(text)).toBe(false);
+});
+
+test("the text digest escapes the render error it reports", () => {
+  const text = buildTextDigest([], "weekly", "no <shell> found & failed", NOW);
+  expect(text).toContain("Reason: no &lt;shell&gt; found &amp; failed");
 });

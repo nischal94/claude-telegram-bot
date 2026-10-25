@@ -4,6 +4,10 @@
 # Reads TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from macOS Keychain.
 # Always exits 0 — notification failure must never block callers.
 set -uo pipefail
+# The token must never reach a trace, or a child's environment: no xtrace,
+# no auto-export, and drop any export the caller gave these names.
+set +x +a
+unset TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
 
 MSG="${1:-}"
 if [[ -z "$MSG" ]]; then
@@ -20,20 +24,40 @@ if [[ -z "$TELEGRAM_BOT_TOKEN" || -z "$TELEGRAM_CHAT_ID" ]]; then
 fi
 
 MAX_ATTEMPTS=3
-DELAY=2
+DELAY="${CLAUDE_BOT_NOTIFY_DELAY:-2}"
+[[ "$DELAY" =~ ^[0-9]+$ ]] || DELAY=2
+SENT=0
+REJECTED=0
 for i in $(seq 1 $MAX_ATTEMPTS); do
-    if curl -s --max-time 10 -X POST \
-        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    # The URL holds the bot token, so it goes to curl as a config on stdin
+    # (-K -), not as an argument that `ps` could show. printf is a shell
+    # builtin, so the token is never in any process's arguments.
+    # curl prints only the HTTP status; 000 means no answer at all.
+    CODE=$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" | curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST -K - \
         -d "chat_id=${TELEGRAM_CHAT_ID}" \
         --data-urlencode "text=${MSG}" \
-        > /dev/null 2>&1; then
-        break
-    fi
+        --data-urlencode 'link_preview_options={"is_disabled":true}' \
+        2>/dev/null)
+    case "$CODE" in
+        2??) SENT=1; break ;;
+        000|429|5??) ;;  # no answer, rate limit or server error: try again
+        *)
+            # Any other answer (401, 403, 400) fails the same way every time.
+            echo "[claude-bot-notify] Telegram rejected the message: HTTP $CODE" >&2
+            REJECTED=1
+            break
+            ;;
+    esac
     if [ "$i" -lt "$MAX_ATTEMPTS" ]; then
-        sleep $DELAY
+        sleep "$DELAY"
         DELAY=$((DELAY * 2))
     fi
 done
+
+if [ "$SENT" -eq 0 ] && [ "$REJECTED" -eq 0 ]; then
+    # curl's own error text stays hidden; it could include the request.
+    echo "[claude-bot-notify] message not sent after $MAX_ATTEMPTS attempts" >&2
+fi
 
 unset TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
 exit 0
