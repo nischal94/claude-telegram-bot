@@ -42,9 +42,15 @@ afterAll(() => {
 function runNotify(message: string, extraEnv: Record<string, string> = {}) {
   rmSync(join(dir, "curl-calls"), { force: true });
   return Bun.spawnSync(["/bin/bash", NOTIFY, message], {
-    env: { PATH: `${stubs}:/usr/bin:/bin`, HOME: dir, CLAUDE_BOT_NOTIFY_DELAY: "0", ...extraEnv },
+    env: { PATH: `${stubs}:/usr/bin:/bin`, HOME: dir, CLAUDE_BOT_NOTIFY_DELAY: "0", CLAUDE_BOT_SECURITY: join(stubs, "security"), ...extraEnv },
   });
 }
+
+// Checked in the script text, not by running it: without the override the
+// script would read the owner's real token from the Keychain.
+test("notify.sh reads the Keychain through /usr/bin/security by default", () => {
+  expect(readFileSync(NOTIFY, "utf-8")).toContain('SECURITY="${CLAUDE_BOT_SECURITY:-/usr/bin/security}"');
+});
 
 test("notify.sh sends once when Telegram accepts the message", () => {
   const result = runNotify("hello");
@@ -94,7 +100,7 @@ test("notify.sh keeps the token out of curl's environment even if the caller exp
 
 test("notify.sh does not print the token when run with bash -x", () => {
   const result = Bun.spawnSync(["/bin/bash", "-x", NOTIFY, "hello"], {
-    env: { PATH: `${stubs}:/usr/bin:/bin`, HOME: dir },
+    env: { PATH: `${stubs}:/usr/bin:/bin`, HOME: dir, CLAUDE_BOT_SECURITY: join(stubs, "security") },
   });
   expect(result.exitCode).toBe(0);
   expect(result.stderr.toString()).not.toContain(TOKEN);

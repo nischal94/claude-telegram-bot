@@ -121,10 +121,11 @@ export function buildFetchHandler(
 export function startCompanion() {
   const config = loadConfig();
 
-  // Ensure directories exist. The engine folder holds memory, jobs and the
-  // API token, so it is owner-only even if it already existed.
+  // Ensure directories exist, owner-only even if they already existed. The
+  // engine folder holds memory, jobs and the API token; the logs folder holds
+  // logs created before the Umask was set, which keep their old modes.
   ensureOwnerOnlyDir(config.companionDir);
-  mkdirSync(config.logsDir, { recursive: true, mode: 0o700 });
+  ensureOwnerOnlyDir(config.logsDir);
 
   // Memory
   const store = new MemoryStore(join(config.companionDir, "memory.db"));

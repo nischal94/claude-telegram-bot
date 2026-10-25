@@ -9,7 +9,9 @@
 # key from macOS Keychain. This script does not handle the Anthropic key
 # directly — keeps it out of argv and out of any temp file on disk.
 set -euo pipefail
-# Files this script and the tmux server it starts create are owner-only.
+# Files this script creates are owner-only, and so are files from a tmux
+# server it starts. A tmux server that is already running keeps its own
+# umask, which is why the bot log is also set to 0600 below.
 umask 077
 
 EXPERIMENT_DIR="$HOME/projects/claude-telegram-bot"
@@ -20,10 +22,13 @@ LOG_DIR="$HOME/.claude/logs"
 BOT_LOG="$LOG_DIR/claudebot.log"
 
 mkdir -p "$LOG_DIR"
-# The log holds the bot's whole screen, chat included. A log created before
-# the umask above keeps its old mode, so tighten it explicitly.
-touch "$BOT_LOG"
-chmod 600 "$BOT_LOG"
+# The log holds the bot's whole screen, chat included. Logs created before
+# the umask above keep their old modes, so make the folder owner-only (which
+# keeps every log in it private) and the bot log 0600. A failure here is
+# reported but does not stop the bot from starting.
+if ! { chmod 700 "$LOG_DIR" && touch "$BOT_LOG" && chmod 600 "$BOT_LOG"; }; then
+    echo "[claude-bot-start] could not make $BOT_LOG owner-only" >&2
+fi
 
 if [[ ! -x "$EXPERIMENT_DIR/deploy/launch_bot.sh" ]]; then
     echo "[claude-bot-start] launch_bot.sh not found or not executable: $EXPERIMENT_DIR/deploy/launch_bot.sh" >&2

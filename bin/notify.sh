@@ -15,8 +15,11 @@ if [[ -z "$MSG" ]]; then
     exit 0
 fi
 
-TELEGRAM_BOT_TOKEN=$(security find-generic-password -s "telegram-bot-token-claudebot" -w 2>/dev/null || true)
-TELEGRAM_CHAT_ID=$(security find-generic-password -s "telegram-chat-id-claudebot" -w 2>/dev/null || true)
+# Absolute path, as in the engine: /opt/homebrew/bin comes first on PATH,
+# and a `security` there would receive the token. The override is for tests.
+SECURITY="${CLAUDE_BOT_SECURITY:-/usr/bin/security}"
+TELEGRAM_BOT_TOKEN=$("$SECURITY" find-generic-password -s "telegram-bot-token-claudebot" -w 2>/dev/null || true)
+TELEGRAM_CHAT_ID=$("$SECURITY" find-generic-password -s "telegram-chat-id-claudebot" -w 2>/dev/null || true)
 
 if [[ -z "$TELEGRAM_BOT_TOKEN" || -z "$TELEGRAM_CHAT_ID" ]]; then
     echo "[claude-bot-notify] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing from Keychain" >&2

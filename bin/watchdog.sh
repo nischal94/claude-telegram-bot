@@ -34,6 +34,9 @@ GIVE_UP_STAMP="$HOME/.claude/logs/.claudebot-give-up-alert-sent"
 MAX_RESTARTS=5
 
 mkdir -p "$(dirname "$LOG_FILE")"
+# Logs created before the umask above keep their old modes; an owner-only
+# folder keeps every file in it private regardless.
+chmod 700 "$(dirname "$LOG_FILE")" 2>/dev/null || true
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [watchdog] $*" | tee -a "$LOG_FILE"
@@ -72,15 +75,32 @@ find_bot_pids() {
     pgrep -u "$(id -u)" -f "claude.*--channels plugin:telegram" 2>/dev/null || true
 }
 
-# The context % from the status line. Only the last few lines are read: the
-# rest of the pane is chat, which can quote any percentage.
-context_pct() {
+# The bottom of the pane: the status line block (context bar, usage lines)
+# and Claude Code's footer. Text above it is chat, which can quote anything.
+BOTTOM_LINES=8
+pane_bottom() {
     tmux capture-pane -t "$TARGET:" -p 2>/dev/null \
         | grep -v '^[[:space:]]*$' \
-        | tail -n 3 \
-        | grep -oE '[0-9]+% / [0-9]+(k|m)' \
+        | tail -n "$BOTTOM_LINES"
+}
+
+# The context % from the status line's bar, e.g. "[████░░░░░░ 45% / 200k]"
+# or "[…] 92% / 1.0m]" for a 1M context. Only the bracketed form near the
+# bottom counts, so a percentage quoted in chat is not mistaken for it.
+context_pct() {
+    pane_bottom \
+        | grep -oE '\[[^]]* [0-9]+% / [0-9.]+[km]\]' \
         | tail -n 1 \
-        | grep -oE '^[0-9]+'
+        | grep -oE '[0-9]+%' \
+        | tr -d '%'
+}
+
+# True when the restart cap is reached, without counting a restart.
+restart_cap_reached() {
+    local count
+    count=$(cat "$RESTART_COUNT_FILE" 2>/dev/null || echo 0)
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    [[ "$count" -ge "$MAX_RESTARTS" ]]
 }
 
 # ── Step 1: Find the bot's claude PID ────────────────────────────────────────
@@ -109,13 +129,57 @@ fi
 
 CLAUDE_PID="${PIDS[0]}"
 
-# ── Step 1b: Check context window usage ──────────────────────────────────────
+check_healthy() {
+    pgrep -P "$CLAUDE_PID" bun > /dev/null 2>&1
+}
+
+PANE_TEXT=""
+PANE_BOTTOM=""
+if tmux has-session -t "$TARGET" 2>/dev/null; then
+    PANE_TEXT=$(tmux capture-pane -t "$TARGET:" -p 2>/dev/null || true)
+    PANE_BOTTOM=$(pane_bottom || true)
+fi
+
+# ── Step 1b: Detect OAuth expiry ─────────────────────────────────────────────
+# When the OAuth session dies, the bot still runs and the bun plugin is still
+# loaded — it just can't call the API. Symptom is a "Please run /login" or
+# "Not logged in" string in the tmux pane. We alert the user once (de-duped
+# via stamp file) and let the bot sit until it gets re-authed.
+# - Checked before compaction: without a login, /compact cannot work, and
+#   trying it would only restart the bot until the cap, hiding the alert.
+# - Checked only while the plugin runs: if the plugin is dead, login text on
+#   screen (perhaps quoted in chat) must not stop the restart.
+# - Only the bottom of the pane is read, so chat quoting the text higher up
+#   does not raise a false alert.
+if check_healthy; then
+    if [[ -n "$PANE_BOTTOM" ]] && grep -qE 'Not logged in|Please run /login' <<< "$PANE_BOTTOM"; then
+        if [[ ! -f "$OAUTH_ALERT_STAMP" ]]; then
+            log "OAuth session expired — bot is alive but unauthenticated. Alerting user."
+            "$NOTIFY" "🔐 Bot OAuth session expired. Run: ~/bin/claude-bot-relogin.sh" || true
+            touch "$OAUTH_ALERT_STAMP"
+        fi
+        # Don't kill or restart — that won't fix auth. Let the human handle it.
+        exit 0
+    fi
+    # Reset the alert stamp once we're past the unauthenticated state, so the
+    # next expiry will alert again.
+    [[ -f "$OAUTH_ALERT_STAMP" ]] && rm -f "$OAUTH_ALERT_STAMP"
+fi
+
+# ── Step 1c: Check context window usage ──────────────────────────────────────
 CTX_PCT=""
 if tmux has-session -t "$TARGET" 2>/dev/null; then
     CTX_PCT=$(context_pct)
 fi
 
 if [[ -n "$CTX_PCT" ]] && [[ "$CTX_PCT" -gt "$CONTEXT_THRESHOLD" ]] 2>/dev/null; then
+    # A failed /compact ends in a restart; once restarts are used up, don't
+    # keep sending /compact and blocking for 60 s on every tick.
+    if restart_cap_reached; then
+        log "Context window at ${CTX_PCT}% but the restart cap is reached — not compacting."
+        claim_restart || true  # sends the one-time "stopped restarting" alert
+        exit 0
+    fi
     log "Context window at ${CTX_PCT}% (threshold: ${CONTEXT_THRESHOLD}%). Sending /compact."
     tmux send-keys -t "$TARGET:" "/compact" Enter
     # Wait up to 60s for context % to drop below threshold
@@ -142,36 +206,8 @@ if [[ -n "$CTX_PCT" ]] && [[ "$CTX_PCT" -gt "$CONTEXT_THRESHOLD" ]] 2>/dev/null;
     exit 0
 fi
 
-PANE_TEXT=""
-if tmux has-session -t "$TARGET" 2>/dev/null; then
-    PANE_TEXT=$(tmux capture-pane -t "$TARGET:" -p 2>/dev/null || true)
-fi
-
 # ── Step 2: Check for bun child (Telegram plugin) ────────────────────────────
-check_healthy() {
-    pgrep -P "$CLAUDE_PID" bun > /dev/null 2>&1
-}
-
 if check_healthy; then
-    # ── Step 2b: Detect OAuth expiry ─────────────────────────────────────────
-    # When the OAuth session dies, the bot still runs and the bun plugin is
-    # still loaded — it just can't call the API. Symptom is a "Please run
-    # /login" or "Not logged in" string in the tmux pane. We alert the user
-    # once (de-duped via stamp file) and let the bot sit until it gets
-    # re-authed. Checked only while the plugin runs: if the plugin is dead,
-    # login text on screen (perhaps quoted in chat) must not stop the restart.
-    if [[ -n "$PANE_TEXT" ]] && grep -qE 'Not logged in|Please run /login' <<< "$PANE_TEXT"; then
-        if [[ ! -f "$OAUTH_ALERT_STAMP" ]]; then
-            log "OAuth session expired — bot is alive but unauthenticated. Alerting user."
-            "$NOTIFY" "🔐 Bot OAuth session expired. Run: ~/bin/claude-bot-relogin.sh" || true
-            touch "$OAUTH_ALERT_STAMP"
-        fi
-        # Don't kill or restart — that won't fix auth. Let the human handle it.
-        exit 0
-    fi
-    # Reset the alert stamp once we're past the unauthenticated state, so the
-    # next expiry will alert again.
-    [[ -f "$OAUTH_ALERT_STAMP" ]] && rm -f "$OAUTH_ALERT_STAMP"
     log "HEALTHY (context: ${CTX_PCT:-unknown}%)"
     mark_healthy
     exit 0

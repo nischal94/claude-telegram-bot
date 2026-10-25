@@ -188,23 +188,77 @@ touch "$T/bun_alive"
 run_watchdog
 assert_eq "pgrep for the bot is limited to the owner's uid" 1 "$(grep -c -- "-u $(id -u) -f" "$T/pgrep.log")"
 assert_eq "every tmux target is the exact session name" 0 "$(grep -- "-t" "$T/tmux.log" | grep -vc -- "-t =claude-bot")"
+assert_eq "pane commands use the exact pane target =claude-bot:" 0 "$(grep -E '^(capture-pane|send-keys|pipe-pane)' "$T/tmux.log" | grep -vc -- "-t =claude-bot:")"
+rm -rf "$T"
+
+# The real status line block: the context bar line, usage lines, and Claude
+# Code's footer. $1 is the context %, $2 the context size.
+status_block() {
+    printf '  Opus 5.5 │ [█████████░ %s%% / %s] │ claude-telegram-bot\n' "$1" "$2"
+    printf 'current ████░░░░░░ 40%% ⟳ 2h10m\n'
+    printf 'weekly  ██░░░░░░░░ 20%% ⟳ 3d4h\n'
+    printf '  ⏵⏵ bypass permissions on (shift+tab to cycle)\n'
+}
+
+# ── The context % is read from the real multi-line status block ──────────────
+setup
+{ echo "assistant: here is your answer"; status_block 92 200k; } > "$T/pane"
+touch "$T/bun_alive"
+run_watchdog
+assert_eq "92% in the status block: /compact sent" 1 "$(count "/compact" "$T/sendkeys.log")"
+rm -rf "$T"
+
+# ── A 1M context prints its size as 1.0m ─────────────────────────────────────
+setup
+{ echo "assistant: done"; status_block 91 1.0m; } > "$T/pane"
+touch "$T/bun_alive"
+run_watchdog
+assert_eq "1.0m context at 91%: /compact sent" 1 "$(count "/compact" "$T/sendkeys.log")"
 rm -rf "$T"
 
 # ── A /compact that fails counts toward the restart cap ──────────────────────
 setup
-printf 'chat line\n  claude  95%% / 200k\n' > "$T/pane"
+{ echo "chat line"; status_block 95 200k; } > "$T/pane"
 touch "$T/bun_alive"
 for _i in 1 2 3 4 5 6 7; do run_watchdog; done
 assert_eq "failed compact: restarts capped at 5" 5 "$(kills)"
 assert_eq "failed compact: one give-up alert" 1 "$(count "stopped restarting" "$T/notify.log")"
+assert_eq "failed compact: no /compact once the cap is reached" 5 "$(count "/compact" "$T/sendkeys.log")"
 rm -rf "$T"
 
 # ── The context % comes from the status line, not from chat text ─────────────
 setup
-printf 'user: my disk is 95%% / 200k full, help\n\n  claude  10%% / 200k\n' > "$T/pane"
+{ echo "user: my disk shows [██ 95% / 200k] full, help"; status_block 10 200k; } > "$T/pane"
 touch "$T/bun_alive"
 run_watchdog
 assert_eq "chat text with a percentage: no /compact" 0 "$(cat "$T/sendkeys.log" 2>/dev/null | wc -l | tr -d ' ')"
+rm -rf "$T"
+
+# ── An expired login with a full context alerts instead of compacting ────────
+setup
+{ echo "Not logged in · Please run /login"; status_block 95 200k; } > "$T/pane"
+touch "$T/bun_alive"
+run_watchdog
+assert_eq "expired login at 95% context: OAuth alert" 1 "$(count OAuth "$T/notify.log")"
+assert_eq "expired login at 95% context: no /compact" 0 "$(cat "$T/sendkeys.log" 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "expired login at 95% context: no restart" 0 "$(kills)"
+rm -rf "$T"
+
+# ── The logs folder is made owner-only ───────────────────────────────────────
+setup
+chmod 755 "$T/home/.claude/logs"
+echo "normal output" > "$T/pane"
+touch "$T/bun_alive"
+run_watchdog
+assert_eq "logs folder is owner-only after a run" 700 "$(stat -f '%Lp' "$T/home/.claude/logs")"
+rm -rf "$T"
+
+# ── Login text quoted in chat above the status block is not an expiry ────────
+setup
+{ echo "user: what does 'Please run /login' mean?"; for _i in 1 2 3 4 5 6; do echo "assistant: line $_i"; done; status_block 20 200k; } > "$T/pane"
+touch "$T/bun_alive"
+run_watchdog
+assert_eq "login text quoted higher up, plugin alive: no OAuth alert" 0 "$(count OAuth "$T/notify.log")"
 rm -rf "$T"
 
 # ── Login text on screen must not stop the restart of a dead plugin ──────────

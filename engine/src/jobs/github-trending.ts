@@ -187,12 +187,14 @@ export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
   // A fresh owner-only folder (mkdtemp creates it 0700), so no other process
   // can predict the card's path or swap its files. os.tmpdir() also covers an
   // empty TMPDIR, which used to put the card at the filesystem root.
-  const workDir = mkdtempSync(join(tmpdir(), "trending-"));
-  const tmpPath = join(workDir, `trending-${period}.png`);
+  // Created inside the try, so a failure here also falls back to text.
+  let workDir: string | undefined;
   const periodLabel = period === "weekly" ? "this week" : "last month";
 
   let renderError: string | null = null;
   try {
+    workDir = mkdtempSync(join(tmpdir(), "trending-"));
+    const tmpPath = join(workDir, `trending-${period}.png`);
     await renderCard(repos, period, tmpPath);
     await telegram.sendPhotoWithRetry(tmpPath, `Fastest growing GitHub repos ${periodLabel}`);
     console.log(`[github-trending] delivered ${period} digest (image) with ${repos.length} repos`);
@@ -203,7 +205,9 @@ export async function sendDigest(period: "weekly" | "monthly"): Promise<void> {
     // (e.g. the Playwright browser cache was cleared) is visible, not silent.
     renderError = (e instanceof Error ? e.message : String(e)).split("\n")[0];
   } finally {
-    try { rmSync(workDir, { recursive: true, force: true }); } catch (e) { console.warn("[github-trending] failed to clean up the card folder:", e); }
+    if (workDir) {
+      try { rmSync(workDir, { recursive: true, force: true }); } catch (e) { console.warn("[github-trending] failed to clean up the card folder:", e); }
+    }
   }
 
   await deliverTextDigest(telegram, repos, period, renderError, new Date());
